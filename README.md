@@ -1,59 +1,111 @@
-# OBS Plugin Template
+# OBS PingPong Loop Filter
 
-## Introduction
+A video filter plugin for OBS Studio that creates a seamless ping-pong loop effect by recording and playing back video frames in a forward-backward-forward pattern.
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+## Features
 
-* Boilerplate plugin source code
-* A CMake project file
-* GitHub Actions workflows and repository actions
+- **Configurable Buffer Duration**: Record 10 to 60 seconds of video
+- **Ping-Pong Playback**: Smooth forward and backward playback creating a seamless loop
+- **Variable Playback Speed**: Adjust speed from 0.1x to 2.0x
+- **Hotkey Support**: Toggle loop on/off with customizable hotkeys
+- **Real-time Preview**: See live video while the buffer is recording
 
-## Supported Build Environments
+## Installation
 
-| Platform  | Tool   |
-|-----------|--------|
-| Windows   | Visal Studio 17 2022 |
-| macOS     | XCode 16.0 |
-| Windows, macOS  | CMake 3.30.5 |
-| Ubuntu 24.04 | CMake 3.28.3 |
-| Ubuntu 24.04 | `ninja-build` |
-| Ubuntu 24.04 | `pkg-config`
-| Ubuntu 24.04 | `build-essential` |
+### Building from Source
 
-## Quick Start
+#### Prerequisites
+- CMake 3.28 or higher
+- OBS Studio 31.1.1 or higher
+- C++17 compatible compiler
+- Platform-specific build tools:
+  - **Windows**: Visual Studio 2022
+  - **macOS**: Xcode 16.0+
+  - **Linux**: GCC or Clang with build-essential
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+#### Build Instructions
 
-## Documentation
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/Ping-Pong-LoopFilter.git
+cd Ping-Pong-LoopFilter
+```
 
-All documentation can be found in the [Plugin Template Wiki](https://github.com/obsproject/obs-plugintemplate/wiki).
+2. Configure with CMake:
+```bash
+# Linux
+cmake --preset ubuntu-x86_64
 
-Suggested reading to get up and running:
+# macOS
+cmake --preset macos
 
-* [Getting started](https://github.com/obsproject/obs-plugintemplate/wiki/Getting-Started)
-* [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
-* [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
+# Windows
+cmake --preset windows-x64
+```
 
-## GitHub Actions & CI
+3. Build the plugin:
+```bash
+# Linux
+cmake --build build_x86_64 --config RelWithDebInfo
 
-Default GitHub Actions workflows are available for the following repository actions:
+# macOS
+cmake --build build_macos --config RelWithDebInfo
 
-* `push`: Run for commits or tags pushed to `master` or `main` branches.
-* `pr-pull`: Run when a Pull Request has been pushed or synchronized.
-* `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
-* `build-project`: Builds the actual project and is triggered by other workflows.
-* `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
+# Windows
+cmake --build build_x64 --config RelWithDebInfo
+```
 
-The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
+4. Install the plugin:
+- Copy the built plugin file to your OBS plugins directory
+- Restart OBS Studio
 
-### Retrieving build artifacts
+## Usage
 
-Successful builds on GitHub Actions will produce build artifacts that can be downloaded for testing. These artifacts are commonly simple archives and will not contain package installers or installation programs.
+1. Add the filter to any video source:
+   - Right-click on a source in OBS
+   - Select "Filters"
+   - Click the "+" button under "Effect Filters"
+   - Choose "PingPong Loop Filter"
 
-### Building a Release
+2. Configure the filter settings:
+   - **Buffer Length**: Set the duration of the loop (10-60 seconds)
+   - **Ping-Pong Mode**: Enable for forward-backward playback, disable for forward-only loop
+   - **Playback Speed**: Adjust the speed of playback
 
-To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
+3. Start the loop:
+   - Click "Toggle Loop" button in the filter properties, or
+   - Use the assigned hotkey (configure in OBS Settings → Hotkeys)
 
-## Signing and Notarizing on macOS
+## How It Works
 
-Basic concepts of codesigning and notarization on macOS are explained in the correspodning [Wiki article](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS) which has a specific section for the [GitHub Actions setup](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS#setting-up-code-signing-for-github-actions).
+The filter operates in two modes:
+
+### Recording Mode (Loop Disabled)
+- Video frames pass through unchanged to the output
+- Frames are continuously recorded into a circular buffer
+- Oldest frames are discarded when buffer is full
+
+### Playback Mode (Loop Enabled)
+- Buffered frames are played back in sequence
+- When reaching the end, playback reverses direction
+- Creates a seamless ping-pong effect
+- Live input is ignored during playback
+
+## Performance Considerations
+
+- Each second of buffer at 1080p 60fps uses approximately 500MB of GPU memory
+- Reduce buffer duration for lower-end systems
+- Consider lowering source resolution if experiencing performance issues
+
+## License
+
+This project is licensed under the GNU General Public License v2.0 - see the LICENSE file for details.
+
+## Author
+
+Biztactix
+
+## Acknowledgments
+
+- OBS Studio team for the plugin API and template
+- Community contributors for testing and feedback
