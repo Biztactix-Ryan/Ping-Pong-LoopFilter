@@ -27,7 +27,7 @@ A video filter plugin for OBS Studio that creates a seamless ping-pong loop effe
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/Ping-Pong-LoopFilter.git
+git clone https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter.git
 cd Ping-Pong-LoopFilter
 ```
 
