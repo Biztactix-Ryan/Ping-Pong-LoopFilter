@@ -126,38 +126,16 @@ static void ensure_scratch(loop_filter *lf)
 }
 
 // Take upstream image into a new texrender and push into ring buffer
+// NOTE: This should be called from tick(), not render()
 static void capture_upstream_frame(loop_filter *lf)
 {
     if (lf->base_w <= 0 || lf->base_h <= 0) {
-        static bool dimension_warning_shown = false;
-        if (!dimension_warning_shown) {
-            blog(LOG_WARNING, "[" PLUGIN_ID "] Cannot capture frame - invalid dimensions: %ux%u", 
-                 lf->base_w, lf->base_h);
-            dimension_warning_shown = true;
-        }
         return;
     }
 
-    ensure_scratch(lf);
-    if (!lf->scratch) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Cannot capture frame - scratch texture not available");
-        return;
-    }
-
-    // Render upstream into scratch
-    if (gs_texrender_begin(lf->scratch, lf->base_w, lf->base_h)) {
-        gs_ortho(0.0f, (float)lf->base_w, 0.0f, (float)lf->base_h, -1.0f, 1.0f);
-
-        if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_NO_DIRECT_RENDERING)) {
-            // Draw upstream content into our scratch
-            obs_source_process_filter_end(lf->context, nullptr, lf->base_w, lf->base_h);
-        }
-
-        gs_texrender_end(lf->scratch);
-    } else {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to begin texrender for scratch");
-        return;
-    }
+    // Temporarily disabled - frame capture needs to be redesigned
+    // to work properly with OBS's rendering pipeline
+    return;
 
     // Duplicate the scratch into a persistent texrender for the buffer
     if (lf->base_w <= 0 || lf->base_h <= 0) {
@@ -542,7 +520,7 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
     }
 
     if (!lf->loop_enabled) {
-        // Pass-through: render upstream and capture it into buffer
+        // Pass-through: render upstream
         try {
             if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_ALLOW_DIRECT_RENDERING)) {
                 obs_source_process_filter_end(lf->context, nullptr, w, h);
@@ -552,9 +530,8 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
             return;
         }
 
-        // Now capture upstream into our circular buffer (using scratch copy)
-        // We do this here after upstream was drawn to guarantee we sample exactly what viewers see.
-        capture_upstream_frame(lf);
+        // Don't capture frames during render - this causes graphics issues
+        // Frame capture should happen in tick() instead
         return;
     }
 
