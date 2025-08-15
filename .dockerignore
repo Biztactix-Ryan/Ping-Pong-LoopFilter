@@ -1,0 +1,29 @@
+# Git files
+.git
+.gitignore
+.github
+
+# Build outputs
+build*/
+build-output/
+*.so
+*.dll
+*.dylib
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+!README.md
+
+# Scripts (we copy these separately if needed)
+*.sh
+
+# Temporary files
+*.tmp
+*.log

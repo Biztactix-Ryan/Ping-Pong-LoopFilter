@@ -15,6 +15,12 @@
 !CMakePresets.json
 !LICENSE
 !README.md
+!CLAUDE.md
+!Dockerfile
+!docker-compose.yml
+!.dockerignore
+!build-docker.sh
+!clean-docker.sh
 
 # Exclude lock files
 *.lock.json

@@ -12,7 +12,31 @@ A video filter plugin for OBS Studio that creates a seamless ping-pong loop effe
 
 ## Installation
 
-### Building from Source
+### Building with Docker (Recommended)
+
+The easiest way to build the plugin is using Docker, which handles all dependencies automatically.
+
+#### Prerequisites
+- Docker installed ([Get Docker](https://docs.docker.com/get-docker/))
+- Git
+
+#### Quick Build
+
+```bash
+# Clone the repository
+git clone https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter.git
+cd Ping-Pong-LoopFilter
+
+# Build the plugin
+./build-docker.sh
+
+# The plugin will be in build-output/
+ls build-output/
+```
+
+The built plugin (.so file for Linux) will be in the `build-output/` directory.
+
+### Building from Source (Advanced)
 
 #### Prerequisites
 - CMake 3.28 or higher
@@ -21,9 +45,9 @@ A video filter plugin for OBS Studio that creates a seamless ping-pong loop effe
 - Platform-specific build tools:
   - **Windows**: Visual Studio 2022
   - **macOS**: Xcode 16.0+
-  - **Linux**: GCC or Clang with build-essential
+  - **Linux**: GCC or Clang with build-essential, libobs-dev
 
-#### Build Instructions
+#### Manual Build Instructions
 
 1. Clone the repository:
 ```bash
@@ -56,8 +80,26 @@ cmake --build build_x64 --config RelWithDebInfo
 ```
 
 4. Install the plugin:
-- Copy the built plugin file to your OBS plugins directory
-- Restart OBS Studio
+
+#### Linux Installation
+```bash
+# Create plugin directory
+mkdir -p ~/.config/obs-studio/plugins/obs-pingpong-loop-filter/bin/64bit/
+
+# Copy the plugin (from Docker build)
+cp build-output/*.so ~/.config/obs-studio/plugins/obs-pingpong-loop-filter/bin/64bit/
+
+# Or from manual build
+cp build_x86_64/*.so ~/.config/obs-studio/plugins/obs-pingpong-loop-filter/bin/64bit/
+```
+
+#### Windows Installation
+- Copy the .dll file to: `C:\Program Files\obs-studio\obs-plugins\64bit\`
+
+#### macOS Installation  
+- Copy the .dylib file to: `/Library/Application Support/obs-studio/plugins/`
+
+After installation, restart OBS Studio.
 
 ## Usage
 

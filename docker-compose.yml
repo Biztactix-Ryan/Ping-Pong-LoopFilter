@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    volumes:
+      - ./build-output:/output
+    command: >
+      sh -c "cp -r /plugin/build_x86_64/*.so /output/ 2>/dev/null || 
+             cp -r /plugin/build_x86_64/*.dll /output/ 2>/dev/null || 
+             cp -r /plugin/build_x86_64/*.dylib /output/ 2>/dev/null || 
+             echo 'Build artifacts copied to ./build-output/'"
+
+  # Development environment with source mounted
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    volumes:
+      - .:/plugin
+      - ./build-output:/output
+    working_dir: /plugin
+    command: /bin/bash
+    stdin_open: true
+    tty: true
