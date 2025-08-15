@@ -236,7 +236,27 @@ static void *loop_filter_create(obs_data_t *settings, obs_source_t *context)
 {
     blog(LOG_INFO, "[" PLUGIN_ID "] Creating filter instance...");
     
-    auto *lf = new loop_filter();
+    if (!context) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] No source context provided!");
+        return nullptr;
+    }
+    
+    loop_filter *lf = nullptr;
+    try {
+        lf = new loop_filter();
+    } catch (const std::exception& e) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to allocate filter: %s", e.what());
+        return nullptr;
+    } catch (...) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to allocate filter: unknown error");
+        return nullptr;
+    }
+    
+    if (!lf) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create filter instance");
+        return nullptr;
+    }
+    
     lf->context = context;
 
     // Don't try to get dimensions yet - source may not be ready
@@ -253,7 +273,13 @@ static void *loop_filter_create(obs_data_t *settings, obs_source_t *context)
     recalc_buffer(lf);
     // Don't create scratch yet - wait until we have valid dimensions
 
-    loop_filter_register_hotkeys(lf);
+    try {
+        loop_filter_register_hotkeys(lf);
+    } catch (...) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to register hotkeys");
+        delete lf;
+        return nullptr;
+    }
 
     blog(LOG_INFO, "[" PLUGIN_ID "] Filter created successfully (buffer: %d seconds, max frames: %zu)", 
          lf->buffer_seconds, lf->max_frames);
@@ -359,28 +385,55 @@ static void loop_filter_get_defaults(obs_data_t *settings)
 
 static uint32_t loop_filter_width(void *data)
 {
+    if (!data) return 0;
     auto *lf = reinterpret_cast<loop_filter*>(data);
     if (!lf || !lf->context) return 0;
-    lf->base_w = obs_source_get_base_width(lf->context);
+    
+    try {
+        lf->base_w = obs_source_get_base_width(lf->context);
+    } catch (...) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception in loop_filter_width");
+        return 0;
+    }
     return lf->base_w;
 }
 
 static uint32_t loop_filter_height(void *data)
 {
+    if (!data) return 0;
     auto *lf = reinterpret_cast<loop_filter*>(data);
     if (!lf || !lf->context) return 0;
-    lf->base_h = obs_source_get_base_height(lf->context);
+    
+    try {
+        lf->base_h = obs_source_get_base_height(lf->context);
+    } catch (...) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception in loop_filter_height");
+        return 0;
+    }
     return lf->base_h;
 }
 
 static void loop_filter_tick(void *data, float seconds)
 {
+    if (!data) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] tick called with null data");
+        return;
+    }
+    
     auto *lf = reinterpret_cast<loop_filter*>(data);
-    if (!lf) return;
+    if (!lf || !lf->context) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] tick called with invalid filter or context");
+        return;
+    }
 
     // Keep base size fresh (handles resolution changes)
-    lf->base_w = obs_source_get_base_width(lf->context);
-    lf->base_h = obs_source_get_base_height(lf->context);
+    try {
+        lf->base_w = obs_source_get_base_width(lf->context);
+        lf->base_h = obs_source_get_base_height(lf->context);
+    } catch (...) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception getting source dimensions in tick");
+        return;
+    }
 
     if (!lf->loop_enabled) {
         // Capture upstream into buffer each tick
@@ -432,8 +485,17 @@ static void loop_filter_tick(void *data, float seconds)
 static void loop_filter_render(void *data, gs_effect_t *effect)
 {
     UNUSED_PARAMETER(effect);
+    
+    if (!data) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] render called with null data");
+        return;
+    }
+    
     auto *lf = reinterpret_cast<loop_filter*>(data);
-    if (!lf) return;
+    if (!lf || !lf->context) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] render called with invalid filter or context");
+        return;
+    }
 
     const uint32_t w = loop_filter_width(lf);
     const uint32_t h = loop_filter_height(lf);
@@ -552,27 +614,39 @@ static void loop_filter_register_hotkeys(loop_filter *lf)
 static obs_source_info loop_filter_info = {};
 bool obs_module_load(void)
 {
-    loop_filter_info.id = PLUGIN_ID;
-    loop_filter_info.type = OBS_SOURCE_TYPE_FILTER;
-    loop_filter_info.output_flags = OBS_SOURCE_VIDEO;
+    blog(LOG_INFO, "[" PLUGIN_ID "] Starting module load...");
+    
+    try {
+        memset(&loop_filter_info, 0, sizeof(loop_filter_info));
+        
+        loop_filter_info.id = PLUGIN_ID;
+        loop_filter_info.type = OBS_SOURCE_TYPE_FILTER;
+        loop_filter_info.output_flags = OBS_SOURCE_VIDEO;
 
-    loop_filter_info.get_name = loop_filter_get_name;
-    loop_filter_info.create = loop_filter_create;
-    loop_filter_info.destroy = loop_filter_destroy;
-    loop_filter_info.update = loop_filter_update;
-    loop_filter_info.get_defaults = loop_filter_get_defaults;
-    loop_filter_info.get_properties = loop_filter_properties;
+        loop_filter_info.get_name = loop_filter_get_name;
+        loop_filter_info.create = loop_filter_create;
+        loop_filter_info.destroy = loop_filter_destroy;
+        loop_filter_info.update = loop_filter_update;
+        loop_filter_info.get_defaults = loop_filter_get_defaults;
+        loop_filter_info.get_properties = loop_filter_properties;
 
-    loop_filter_info.video_render = loop_filter_render;
-    loop_filter_info.video_tick = loop_filter_tick;
-    loop_filter_info.get_width = loop_filter_width;
-    loop_filter_info.get_height = loop_filter_height;
-    loop_filter_info.save = loop_filter_save;
+        loop_filter_info.video_render = loop_filter_render;
+        loop_filter_info.video_tick = loop_filter_tick;
+        loop_filter_info.get_width = loop_filter_width;
+        loop_filter_info.get_height = loop_filter_height;
+        loop_filter_info.save = loop_filter_save;
 
-    obs_register_source(&loop_filter_info);
+        obs_register_source(&loop_filter_info);
 
-    blog(LOG_INFO, "[" PLUGIN_ID "] loaded");
-    return true;
+        blog(LOG_INFO, "[" PLUGIN_ID "] Module loaded successfully");
+        return true;
+    } catch (const std::exception& e) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to load module: %s", e.what());
+        return false;
+    } catch (...) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to load module: unknown error");
+        return false;
+    }
 }
 
 void obs_module_unload(void)
