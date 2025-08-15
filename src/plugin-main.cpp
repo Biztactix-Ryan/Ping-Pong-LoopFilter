@@ -66,6 +66,7 @@ struct loop_filter {
     
     // UI state
     obs_property_t *toggle_button = nullptr;
+    double last_ui_update = 0.0;  // Track last UI update time
 };
 
 // ----------------------------- Forward Decls -----------------------------
@@ -201,43 +202,48 @@ static obs_properties_t *loop_filter_properties(void *data)
 
     obs_properties_add_int(props, "buffer_seconds", "Buffer Length (seconds)", 10, 60, 1);
     obs_properties_add_bool(props, "ping_pong", "Ping-Pong (Forward/Reverse)");
+    obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
     
-    // Add playback speed with duration info
-    auto *speed_prop = obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
+    // Add playback duration info as separate text field
     if (lf) {
         double base_duration = lf->ping_pong ? (lf->buffer_seconds * 2.0) : lf->buffer_seconds;
         double actual_duration = base_duration / lf->playback_speed;
-        char speed_desc[256];
-        snprintf(speed_desc, sizeof(speed_desc), 
-            "Playback Speed (%.1fx = ~%.1f seconds playback)", 
-            lf->playback_speed, actual_duration);
-        obs_property_set_description(speed_prop, speed_desc);
+        char duration_text[256];
+        snprintf(duration_text, sizeof(duration_text), 
+            "⏱️ Playback Duration: %.1f seconds at %.1fx speed", 
+            actual_duration, lf->playback_speed);
+        obs_properties_add_text(props, "duration_info", duration_text, OBS_TEXT_INFO);
     }
     
-    // Add buffer status info
+    // Add buffer status info with real-time updates
     if (lf) {
         std::lock_guard<std::mutex> lk(lf->frames_mtx);
         size_t frame_count = lf->frames.size();
         double content_seconds = frame_count * lf->capture_skip_frames / lf->fps;
         char status_text[256];
+        
         if (lf->loop_enabled) {
+            int cycles = lf->total_loops / 2;
             snprintf(status_text, sizeof(status_text), 
-                "🔄 LOOPING - Buffer: %zu frames (%.1f seconds)", 
-                frame_count, content_seconds);
+                "🔄 LOOPING: %zu frames (%.1f sec content) | Cycle %d | Frame %zu/%zu", 
+                frame_count, content_seconds, cycles + 1, lf->play_index + 1, frame_count);
         } else if (frame_count > 0) {
+            int percent = (int)((frame_count * 100) / lf->max_frames);
             snprintf(status_text, sizeof(status_text), 
-                "📼 Buffer: %zu/%zu frames (%.1f/%.1f seconds)", 
-                frame_count, lf->max_frames, content_seconds, (double)lf->buffer_seconds);
+                "📼 RECORDING: %zu/%zu frames (%d%%) | %.1f/%.1f seconds", 
+                frame_count, lf->max_frames, percent, content_seconds, (double)lf->buffer_seconds);
         } else {
-            snprintf(status_text, sizeof(status_text), "📼 Buffer: Empty");
+            snprintf(status_text, sizeof(status_text), 
+                "⏸️ READY: Buffer empty - video will be captured when playing");
         }
-        obs_properties_add_text(props, "buffer_status", "Status", OBS_TEXT_INFO);
+        
+        obs_properties_add_text(props, "buffer_status", "Buffer Status", OBS_TEXT_INFO);
         obs_property_set_description(obs_properties_get(props, "buffer_status"), status_text);
     }
 
     // A button to toggle loop state from UI
-    lf->toggle_button = obs_properties_add_button(props, "toggle_loop", 
-        lf->loop_enabled ? "Stop Loop ⏹" : "Start Loop ▶",
+    const char *button_text = lf && lf->loop_enabled ? "Stop Loop ⏹" : "Start Loop ▶";
+    lf->toggle_button = obs_properties_add_button(props, "toggle_loop", button_text,
         [](obs_properties_t *props, obs_property_t *prop, void *data) -> bool {
             auto *lf = reinterpret_cast<loop_filter*>(data);
             if (!lf) return false;
@@ -315,6 +321,14 @@ static void loop_filter_tick(void *data, float seconds)
     
     auto *lf = reinterpret_cast<loop_filter*>(data);
     if (!lf || !lf->context) return;
+
+    // Update UI periodically (every 1 second)
+    lf->last_ui_update += seconds;
+    if (lf->last_ui_update >= 1.0) {
+        lf->last_ui_update = 0.0;
+        // Force properties refresh to update buffer status
+        obs_source_update_properties(lf->context);
+    }
 
     // Update dimensions
     uint32_t w = obs_source_get_base_width(lf->context);
