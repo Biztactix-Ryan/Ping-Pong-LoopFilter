@@ -115,7 +115,7 @@ static void recalc_buffer(loop_filter *lf)
 
 static void ensure_scratch(loop_filter *lf)
 {
-    if (!lf->scratch && lf->base_w && lf->base_h) {
+    if (!lf->scratch && lf->base_w > 0 && lf->base_h > 0) {
         lf->scratch = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     }
 }
@@ -123,7 +123,7 @@ static void ensure_scratch(loop_filter *lf)
 // Take upstream image into a new texrender and push into ring buffer
 static void capture_upstream_frame(loop_filter *lf)
 {
-    if (!lf->base_w || !lf->base_h)
+    if (lf->base_w <= 0 || lf->base_h <= 0)
         return;
 
     ensure_scratch(lf);
@@ -145,6 +145,9 @@ static void capture_upstream_frame(loop_filter *lf)
     }
 
     // Duplicate the scratch into a persistent texrender for the buffer
+    if (lf->base_w <= 0 || lf->base_h <= 0)
+        return;
+        
     gs_texrender_t *copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     if (!copy)
         return;
@@ -208,17 +211,18 @@ static void *loop_filter_create(obs_data_t *settings, obs_source_t *context)
     auto *lf = new loop_filter();
     lf->context = context;
 
-    lf->base_w = obs_source_get_base_width(context);
-    lf->base_h = obs_source_get_base_height(context);
+    // Don't try to get dimensions yet - source may not be ready
+    lf->base_w = 0;
+    lf->base_h = 0;
 
     loop_filter_get_defaults(settings);
     loop_filter_update(lf, settings);
     recalc_buffer(lf);
-    ensure_scratch(lf);
+    // Don't create scratch yet - wait until we have valid dimensions
 
     loop_filter_register_hotkeys(lf);
 
-    blog(LOG_INFO, "[" PLUGIN_ID "] created (%ux%u)", lf->base_w, lf->base_h);
+    blog(LOG_INFO, "[" PLUGIN_ID "] created (filter initialized)");
     return lf;
 }
 
@@ -379,7 +383,7 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
 
     const uint32_t w = loop_filter_width(lf);
     const uint32_t h = loop_filter_height(lf);
-    if (!w || !h) return;
+    if (w <= 0 || h <= 0) return;
 
     if (!lf->loop_enabled) {
         // Pass-through: render upstream and capture it into buffer
