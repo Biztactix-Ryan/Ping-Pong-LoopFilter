@@ -520,53 +520,14 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
     }
 
     if (!lf->loop_enabled) {
-        // Pass-through: render upstream
-        try {
-            if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_ALLOW_DIRECT_RENDERING)) {
-                obs_source_process_filter_end(lf->context, nullptr, w, h);
-            }
-        } catch (...) {
-            blog(LOG_ERROR, "[" PLUGIN_ID "] Exception during passthrough");
-            return;
-        }
-
-        // Don't capture frames during render - this causes graphics issues
-        // Frame capture should happen in tick() instead
+        // Simple pass-through using skip filter
+        obs_source_skip_video_filter(lf->context);
         return;
     }
 
-    // Looping: draw from the buffer at play_index
-    gs_texrender_t *frame_to_draw = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(lf->frames_mtx);
-        if (!lf->frames.empty()) {
-            // Safety: clamp play_index
-            if (lf->play_index >= lf->frames.size())
-                lf->play_index = lf->frames.size() - 1;
-            frame_to_draw = lf->frames[lf->play_index];
-        }
-    }
-
-    if (!frame_to_draw) {
-        // If nothing buffered yet, just fall back to live
-        if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_ALLOW_DIRECT_RENDERING)) {
-            obs_source_process_filter_end(lf->context, nullptr, w, h);
-        }
-        return;
-    }
-
-    gs_texture_t *tex = gs_texrender_get_texture(frame_to_draw);
-    if (!tex) {
-        // Fallback to live
-        if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_ALLOW_DIRECT_RENDERING)) {
-            obs_source_process_filter_end(lf->context, nullptr, w, h);
-        }
-        return;
-    }
-
-    // Draw the chosen buffered frame
-    gs_ortho(0.0f, (float)w, 0.0f, (float)h, -1.0f, 1.0f);
-    draw_frame(tex, w, h);
+    // Looping: Since we have no frames buffered yet, just pass through
+    // TODO: Implement proper frame buffering and playback
+    obs_source_skip_video_filter(lf->context);
 }
 
 static void loop_filter_save(void *data, obs_data_t *settings)
