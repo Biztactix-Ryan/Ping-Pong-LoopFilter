@@ -24,11 +24,6 @@ static inline double fps_from_ovi(const obs_video_info &ovi)
     return ovi.fps_den ? (double)ovi.fps_num / (double)ovi.fps_den : 60.0;
 }
 
-static inline uint64_t ns_now()
-{
-    return os_gettime_ns();
-}
-
 // Clamp utility
 template<typename T>
 static inline T clampv(T v, T lo, T hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -51,20 +46,20 @@ struct loop_filter {
     size_t max_frames = 0;
 
     // Capture + Playback
-    std::deque<gs_texrender_t*> frames;   // FIFO of frame textures (each is a snapshot)
+    std::deque<gs_texrender_t*> frames;   // FIFO of frame textures
     std::mutex frames_mtx;
 
     // Playback cursor
     size_t play_index = 0;          // 0..frames.size()-1
     int direction = +1;             // +1 forward, -1 backward
     double frame_accum = 0.0;       // fractional frame step timing
-    uint64_t last_tick_ns = 0;
-
-    // Scratch
-    gs_texrender_t *scratch = nullptr;  // where we render upstream each tick
 
     // Hotkey
     obs_hotkey_id hotkey_toggle = OBS_INVALID_HOTKEY_ID;
+    
+    // Frame capture state
+    bool dimensions_valid = false;
+    int frame_skip_counter = 0;  // To reduce capture rate
 };
 
 // ----------------------------- Forward Decls -----------------------------
@@ -77,9 +72,6 @@ static obs_properties_t *loop_filter_properties(void *data);
 static void loop_filter_get_defaults(obs_data_t *settings);
 static void loop_filter_tick(void *data, float seconds);
 static void loop_filter_render(void *data, gs_effect_t *effect);
-static uint32_t loop_filter_width(void *data);
-static uint32_t loop_filter_height(void *data);
-static void loop_filter_save(void *data, obs_data_t *settings);
 
 // Hotkey
 static void loop_filter_register_hotkeys(loop_filter *lf);
@@ -111,96 +103,9 @@ static void recalc_buffer(loop_filter *lf)
 
     lf->max_frames = (size_t)std::llround(lf->fps * clampv(lf->buffer_seconds, 10, 60));
     if (lf->max_frames < 2) lf->max_frames = 2;
-}
-
-static void ensure_scratch(loop_filter *lf)
-{
-    if (!lf->scratch && lf->base_w > 0 && lf->base_h > 0) {
-        lf->scratch = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-        if (lf->scratch) {
-            blog(LOG_DEBUG, "[" PLUGIN_ID "] Created scratch texture (%ux%u)", lf->base_w, lf->base_h);
-        } else {
-            blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create scratch texture (%ux%u)", lf->base_w, lf->base_h);
-        }
-    }
-}
-
-// Take upstream image into a new texrender and push into ring buffer
-// NOTE: This should be called from tick(), not render()
-static void capture_upstream_frame(loop_filter *lf)
-{
-    if (lf->base_w <= 0 || lf->base_h <= 0) {
-        return;
-    }
-
-    // Temporarily disabled - frame capture needs to be redesigned
-    // to work properly with OBS's rendering pipeline
-    return;
-
-    // Duplicate the scratch into a persistent texrender for the buffer
-    if (lf->base_w <= 0 || lf->base_h <= 0) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Invalid dimensions for copy: %ux%u", lf->base_w, lf->base_h);
-        return;
-    }
-        
-    gs_texrender_t *copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-    if (!copy) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create copy texture for frame buffer");
-        return;
-    }
-
-    if (gs_texrender_begin(copy, lf->base_w, lf->base_h)) {
-        gs_ortho(0.0f, (float)lf->base_w, 0.0f, (float)lf->base_h, -1.0f, 1.0f);
-
-        gs_texture_t *src_tex = gs_texrender_get_texture(lf->scratch);
-        if (src_tex) {
-            // Draw src texture to copy
-            gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-            gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
-            gs_effect_set_texture(image, src_tex);
-
-            while (gs_effect_loop(default_effect, "Draw")) {
-                gs_draw_sprite(src_tex, 0, lf->base_w, lf->base_h);
-            }
-        }
-        gs_texrender_end(copy);
-    } else {
-        gs_texrender_destroy(copy);
-        return;
-    }
-
-    // Push into ring buffer
-    {
-        std::lock_guard<std::mutex> lk(lf->frames_mtx);
-        lf->frames.push_back(copy);
-        if (lf->frames.size() > lf->max_frames) {
-            auto *oldest = lf->frames.front();
-            lf->frames.pop_front();
-            if (oldest) gs_texrender_destroy(oldest);
-            // keep play_index sensible if we're in loop mode
-            if (lf->play_index > 0) lf->play_index--;
-        }
-        
-        // Log buffer status periodically
-        static int capture_count = 0;
-        if (++capture_count % 60 == 0) {  // Log every 60 frames (roughly 1 second at 60fps)
-            blog(LOG_DEBUG, "[" PLUGIN_ID "] Buffer status: %zu/%zu frames", 
-                 lf->frames.size(), lf->max_frames);
-        }
-    }
-}
-
-// Draw a frame texture to output
-static void draw_frame(gs_texture_t *tex, uint32_t w, uint32_t h)
-{
-    if (!tex) return;
-    gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-    gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
-    gs_effect_set_texture(image, tex);
-
-    while (gs_effect_loop(default_effect, "Draw")) {
-        gs_draw_sprite(tex, 0, w, h);
-    }
+    
+    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer recalculated: %zu max frames at %.1f fps", 
+         lf->max_frames, lf->fps);
 }
 
 // ----------------------------- OBS Callbacks -----------------------------
@@ -219,48 +124,18 @@ static void *loop_filter_create(obs_data_t *settings, obs_source_t *context)
         return nullptr;
     }
     
-    loop_filter *lf = nullptr;
-    try {
-        lf = new loop_filter();
-    } catch (const std::exception& e) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to allocate filter: %s", e.what());
-        return nullptr;
-    } catch (...) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to allocate filter: unknown error");
-        return nullptr;
-    }
-    
-    if (!lf) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create filter instance");
-        return nullptr;
-    }
-    
+    auto *lf = new loop_filter();
     lf->context = context;
-
-    // Don't try to get dimensions yet - source may not be ready
     lf->base_w = 0;
     lf->base_h = 0;
-    
-    // Try to get initial dimensions (may be 0 if source not ready)
-    uint32_t initial_w = obs_source_get_base_width(context);
-    uint32_t initial_h = obs_source_get_base_height(context);
-    blog(LOG_INFO, "[" PLUGIN_ID "] Initial source dimensions: %ux%u", initial_w, initial_h);
+    lf->dimensions_valid = false;
 
     loop_filter_get_defaults(settings);
     loop_filter_update(lf, settings);
     recalc_buffer(lf);
-    // Don't create scratch yet - wait until we have valid dimensions
+    loop_filter_register_hotkeys(lf);
 
-    try {
-        loop_filter_register_hotkeys(lf);
-    } catch (...) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to register hotkeys");
-        delete lf;
-        return nullptr;
-    }
-
-    blog(LOG_INFO, "[" PLUGIN_ID "] Filter created successfully (buffer: %d seconds, max frames: %zu)", 
-         lf->buffer_seconds, lf->max_frames);
+    blog(LOG_INFO, "[" PLUGIN_ID "] Filter created successfully");
     return lf;
 }
 
@@ -271,21 +146,13 @@ static void loop_filter_destroy(void *data)
 
     blog(LOG_INFO, "[" PLUGIN_ID "] Destroying filter instance...");
     
-    size_t frame_count = 0;
+    obs_enter_graphics();
     {
         std::lock_guard<std::mutex> lk(lf->frames_mtx);
-        frame_count = lf->frames.size();
         clear_frames_locked(lf);
     }
-    
-    blog(LOG_INFO, "[" PLUGIN_ID "] Cleared %zu buffered frames", frame_count);
-    
-    if (lf->scratch) {
-        gs_texrender_destroy(lf->scratch);
-        lf->scratch = nullptr;
-    }
+    obs_leave_graphics();
 
-    blog(LOG_INFO, "[" PLUGIN_ID "] Filter destroyed");
     delete lf;
 }
 
@@ -304,6 +171,7 @@ static void loop_filter_update(void *data, obs_data_t *settings)
     recalc_buffer(lf);
 
     // If we shrank the buffer, trim old frames
+    obs_enter_graphics();
     {
         std::lock_guard<std::mutex> lk(lf->frames_mtx);
         while (lf->frames.size() > lf->max_frames) {
@@ -311,8 +179,8 @@ static void loop_filter_update(void *data, obs_data_t *settings)
             lf->frames.pop_front();
             if (f) gs_texrender_destroy(f);
         }
-        lf->play_index = lf->frames.empty() ? 0 : lf->frames.size() - 1;
     }
+    obs_leave_graphics();
 }
 
 static obs_properties_t *loop_filter_properties(void *data)
@@ -325,7 +193,7 @@ static obs_properties_t *loop_filter_properties(void *data)
     obs_properties_add_bool(props, "ping_pong", "Ping-Pong (Forward/Reverse)");
     obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
 
-    // A button to toggle loop state from UI (optional, hotkey recommended)
+    // A button to toggle loop state from UI
     obs_properties_add_button(props, "toggle_loop", "Toggle Loop",
         [](obs_properties_t*, obs_property_t*, void *data) -> bool {
             auto *lf = reinterpret_cast<loop_filter*>(data);
@@ -335,12 +203,11 @@ static obs_properties_t *loop_filter_properties(void *data)
             blog(LOG_INFO, "[" PLUGIN_ID "] Button toggle: %s", 
                  lf->loop_enabled ? "ENABLED" : "DISABLED");
             
-            // reposition to end for natural start
             std::lock_guard<std::mutex> lk(lf->frames_mtx);
             size_t frame_count = lf->frames.size();
             if (lf->loop_enabled && frame_count > 0) {
                 lf->play_index = frame_count - 1;
-                lf->direction = -1; // start moving backward so it looks continuous
+                lf->direction = -1;
                 blog(LOG_INFO, "[" PLUGIN_ID "] Starting from frame %zu of %zu", 
                      lf->play_index, frame_count);
             } else if (lf->loop_enabled && frame_count == 0) {
@@ -361,70 +228,26 @@ static void loop_filter_get_defaults(obs_data_t *settings)
     obs_data_set_default_double(settings, "playback_speed", 1.0);
 }
 
-static uint32_t loop_filter_width(void *data)
-{
-    if (!data) return 0;
-    auto *lf = reinterpret_cast<loop_filter*>(data);
-    if (!lf || !lf->context) return 0;
-    
-    try {
-        lf->base_w = obs_source_get_base_width(lf->context);
-    } catch (...) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception in loop_filter_width");
-        return 0;
-    }
-    return lf->base_w;
-}
-
-static uint32_t loop_filter_height(void *data)
-{
-    if (!data) return 0;
-    auto *lf = reinterpret_cast<loop_filter*>(data);
-    if (!lf || !lf->context) return 0;
-    
-    try {
-        lf->base_h = obs_source_get_base_height(lf->context);
-    } catch (...) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception in loop_filter_height");
-        return 0;
-    }
-    return lf->base_h;
-}
-
 static void loop_filter_tick(void *data, float seconds)
 {
-    if (!data) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] tick called with null data");
-        return;
-    }
+    if (!data) return;
     
     auto *lf = reinterpret_cast<loop_filter*>(data);
-    if (!lf || !lf->context) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] tick called with invalid filter or context");
-        return;
+    if (!lf || !lf->context) return;
+
+    // Update dimensions
+    uint32_t w = obs_source_get_base_width(lf->context);
+    uint32_t h = obs_source_get_base_height(lf->context);
+    
+    if (w != lf->base_w || h != lf->base_h) {
+        blog(LOG_INFO, "[" PLUGIN_ID "] Dimensions changed: %ux%u -> %ux%u", 
+             lf->base_w, lf->base_h, w, h);
+        lf->base_w = w;
+        lf->base_h = h;
+        lf->dimensions_valid = (w > 0 && h > 0);
     }
 
-    // Skip tick operations if dimensions are 0
-    if (lf->base_w == 0 || lf->base_h == 0) {
-        // Try to get dimensions once per tick
-        try {
-            uint32_t w = obs_source_get_base_width(lf->context);
-            uint32_t h = obs_source_get_base_height(lf->context);
-            if (w > 0 && h > 0) {
-                lf->base_w = w;
-                lf->base_h = h;
-                blog(LOG_INFO, "[" PLUGIN_ID "] Tick: Got valid dimensions %ux%u", w, h);
-            }
-        } catch (...) {
-            // Silently ignore
-        }
-        return;  // Skip rest of tick if no dimensions
-    }
-
-    if (!lf->loop_enabled) {
-        // Capture upstream into buffer each tick
-        // (We capture during render so we don't re-enter the graph here.)
-        // But tick is a good place to advance any timers if needed.
+    if (!lf->loop_enabled || !lf->dimensions_valid) {
         return;
     }
 
@@ -470,70 +293,128 @@ static void loop_filter_tick(void *data, float seconds)
 
 static void loop_filter_render(void *data, gs_effect_t *effect)
 {
-    UNUSED_PARAMETER(effect);
-    
-    if (!data) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] render called with null data");
-        return;
-    }
-    
     auto *lf = reinterpret_cast<loop_filter*>(data);
-    if (!lf || !lf->context) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] render called with invalid filter or context");
-        return;
-    }
+    if (!lf || !lf->context) return;
 
-    // Get dimensions safely
-    uint32_t w = 0, h = 0;
-    try {
-        w = obs_source_get_base_width(lf->context);
-        h = obs_source_get_base_height(lf->context);
-    } catch (...) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception getting dimensions in render");
-        return;
-    }
+    // Update dimensions if needed
+    uint32_t w = obs_source_get_base_width(lf->context);
+    uint32_t h = obs_source_get_base_height(lf->context);
     
-    // Log dimension changes
-    static uint32_t last_w = 0, last_h = 0;
-    static bool first_render = true;
-    if (first_render) {
-        blog(LOG_INFO, "[" PLUGIN_ID "] First render call, dimensions: %ux%u", w, h);
-        first_render = false;
-    }
-    if (w != last_w || h != last_h) {
-        blog(LOG_INFO, "[" PLUGIN_ID "] Source dimensions changed: %ux%u -> %ux%u", 
-             last_w, last_h, w, h);
-        last_w = w;
-        last_h = h;
-        lf->base_w = w;
-        lf->base_h = h;
-    }
-    
-    // If dimensions are invalid, do absolutely nothing - don't even try to render
     if (w == 0 || h == 0) {
-        static int skip_count = 0;
-        if (++skip_count % 60 == 0) {
-            blog(LOG_WARNING, "[" PLUGIN_ID "] Zero dimensions %ux%u, skipping all rendering", w, h);
+        return;
+    }
+    
+    lf->base_w = w;
+    lf->base_h = h;
+    lf->dimensions_valid = true;
+
+    // If loop is enabled and we have frames, play from buffer
+    if (lf->loop_enabled) {
+        gs_texrender_t *frame_to_draw = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(lf->frames_mtx);
+            if (!lf->frames.empty() && lf->play_index < lf->frames.size()) {
+                frame_to_draw = lf->frames[lf->play_index];
+            }
         }
-        // Do NOT call any OBS filter functions with 0x0 dimensions
-        return;
+        
+        if (frame_to_draw) {
+            gs_texture_t *tex = gs_texrender_get_texture(frame_to_draw);
+            if (tex) {
+                // Draw the buffered frame
+                gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+                gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
+                gs_effect_set_texture(image, tex);
+                
+                while (gs_effect_loop(default_effect, "Draw")) {
+                    gs_draw_sprite(tex, 0, w, h);
+                }
+                return;
+            }
+        }
     }
 
-    if (!lf->loop_enabled) {
-        // Simple pass-through using skip filter
+    // Default: render source and capture if not looping
+    gs_texrender_t *texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+    
+    if (texrender) {
+        if (gs_texrender_begin(texrender, w, h)) {
+            vec4 clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+            gs_clear(GS_CLEAR_COLOR, &clear_color, 1.0f, 0);
+            
+            // Render the source
+            if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_NO_DIRECT_RENDERING)) {
+                obs_source_process_filter_end(lf->context, effect, w, h);
+            }
+            
+            gs_texrender_end(texrender);
+            
+            // Draw what we rendered
+            gs_texture_t *tex = gs_texrender_get_texture(texrender);
+            if (tex) {
+                gs_effect_t *default_effect = effect ? effect : obs_get_base_effect(OBS_EFFECT_DEFAULT);
+                gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
+                gs_effect_set_texture(image, tex);
+                
+                while (gs_effect_loop(default_effect, "Draw")) {
+                    gs_draw_sprite(tex, 0, w, h);
+                }
+            }
+            
+            // Capture frame to buffer if not looping (only every few frames to save memory)
+            if (!lf->loop_enabled) {
+                lf->frame_skip_counter++;
+                if (lf->frame_skip_counter >= 2) {  // Capture every 2nd frame
+                    lf->frame_skip_counter = 0;
+                    
+                    std::lock_guard<std::mutex> lk(lf->frames_mtx);
+                    
+                    // Create new texrender for this frame
+                    gs_texrender_t *frame_copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+                    if (frame_copy && gs_texrender_begin(frame_copy, w, h)) {
+                        vec4 clear = {0.0f, 0.0f, 0.0f, 0.0f};
+                        gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
+                        
+                        // Copy the texture
+                        gs_texture_t *src_tex = gs_texrender_get_texture(texrender);
+                        if (src_tex) {
+                            gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+                            gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
+                            gs_effect_set_texture(image, src_tex);
+                            
+                            while (gs_effect_loop(default_effect, "Draw")) {
+                                gs_draw_sprite(src_tex, 0, w, h);
+                            }
+                        }
+                        
+                        gs_texrender_end(frame_copy);
+                        
+                        // Add to buffer
+                        lf->frames.push_back(frame_copy);
+                        if (lf->frames.size() > lf->max_frames) {
+                            auto *oldest = lf->frames.front();
+                            lf->frames.pop_front();
+                            if (oldest) gs_texrender_destroy(oldest);
+                        }
+                        
+                        // Log periodically
+                        static int log_counter = 0;
+                        if (++log_counter % 30 == 0) {
+                            blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %zu/%zu frames", 
+                                 lf->frames.size(), lf->max_frames);
+                        }
+                    } else if (frame_copy) {
+                        gs_texrender_destroy(frame_copy);
+                    }
+                }
+            }
+        }
+        
+        gs_texrender_destroy(texrender);
+    } else {
+        // Fallback: just pass through
         obs_source_skip_video_filter(lf->context);
-        return;
     }
-
-    // Looping: Since we have no frames buffered yet, just pass through
-    // TODO: Implement proper frame buffering and playback
-    obs_source_skip_video_filter(lf->context);
-}
-
-static void loop_filter_save(void *data, obs_data_t *settings)
-{
-    UNUSED_PARAMETER(data);
-    UNUSED_PARAMETER(settings);
 }
 
 // ----------------------------- Hotkeys -----------------------------
@@ -546,10 +427,9 @@ static void loop_filter_toggle_cb(void *data, obs_hotkey_id, obs_hotkey_t *, boo
 
     lf->loop_enabled = !lf->loop_enabled;
     
-    blog(LOG_INFO, "[" PLUGIN_ID "] Loop toggled: %s", lf->loop_enabled ? "ENABLED" : "DISABLED");
+    blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey toggle: %s", lf->loop_enabled ? "ENABLED" : "DISABLED");
 
     if (lf->loop_enabled) {
-        // Start from the latest frame and head backward first (looks continuous)
         std::lock_guard<std::mutex> lk(lf->frames_mtx);
         size_t frame_count = lf->frames.size();
         if (frame_count > 0) {
@@ -559,8 +439,8 @@ static void loop_filter_toggle_cb(void *data, obs_hotkey_id, obs_hotkey_t *, boo
             blog(LOG_INFO, "[" PLUGIN_ID "] Starting playback from frame %zu of %zu", 
                  lf->play_index, frame_count);
         } else {
-            blog(LOG_WARNING, "[" PLUGIN_ID "] No frames in buffer to play!");
-            lf->loop_enabled = false;  // Disable if no frames
+            blog(LOG_WARNING, "[" PLUGIN_ID "] No frames in buffer!");
+            lf->loop_enabled = false;
         }
     }
 }
@@ -578,46 +458,33 @@ static void loop_filter_register_hotkeys(loop_filter *lf)
 
 // ----------------------------- Registration -----------------------------
 
-static obs_source_info loop_filter_info = {};
 bool obs_module_load(void)
 {
-    blog(LOG_INFO, "[" PLUGIN_ID "] Starting module load...");
+    blog(LOG_INFO, "[" PLUGIN_ID "] Loading module...");
     
-    try {
-        memset(&loop_filter_info, 0, sizeof(loop_filter_info));
-        
-        loop_filter_info.id = PLUGIN_ID;
-        loop_filter_info.type = OBS_SOURCE_TYPE_FILTER;
-        loop_filter_info.output_flags = OBS_SOURCE_VIDEO;
+    obs_source_info loop_filter_info = {};
+    
+    loop_filter_info.id = PLUGIN_ID;
+    loop_filter_info.type = OBS_SOURCE_TYPE_FILTER;
+    loop_filter_info.output_flags = OBS_SOURCE_VIDEO;
 
-        loop_filter_info.get_name = loop_filter_get_name;
-        loop_filter_info.create = loop_filter_create;
-        loop_filter_info.destroy = loop_filter_destroy;
-        loop_filter_info.update = loop_filter_update;
-        loop_filter_info.get_defaults = loop_filter_get_defaults;
-        loop_filter_info.get_properties = loop_filter_properties;
+    loop_filter_info.get_name = loop_filter_get_name;
+    loop_filter_info.create = loop_filter_create;
+    loop_filter_info.destroy = loop_filter_destroy;
+    loop_filter_info.update = loop_filter_update;
+    loop_filter_info.get_defaults = loop_filter_get_defaults;
+    loop_filter_info.get_properties = loop_filter_properties;
 
-        loop_filter_info.video_render = loop_filter_render;
-        loop_filter_info.video_tick = loop_filter_tick;
-        // Temporarily comment out width/height to see if they're the issue
-        // loop_filter_info.get_width = loop_filter_width;
-        // loop_filter_info.get_height = loop_filter_height;
-        // loop_filter_info.save = loop_filter_save;
+    loop_filter_info.video_render = loop_filter_render;
+    loop_filter_info.video_tick = loop_filter_tick;
 
-        obs_register_source(&loop_filter_info);
+    obs_register_source(&loop_filter_info);
 
-        blog(LOG_INFO, "[" PLUGIN_ID "] Module loaded successfully");
-        return true;
-    } catch (const std::exception& e) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to load module: %s", e.what());
-        return false;
-    } catch (...) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to load module: unknown error");
-        return false;
-    }
+    blog(LOG_INFO, "[" PLUGIN_ID "] Module loaded successfully");
+    return true;
 }
 
 void obs_module_unload(void)
 {
-    blog(LOG_INFO, "[" PLUGIN_ID "] unloaded");
+    blog(LOG_INFO, "[" PLUGIN_ID "] Module unloaded");
 }
