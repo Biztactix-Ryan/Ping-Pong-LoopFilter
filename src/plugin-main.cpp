@@ -113,8 +113,9 @@ static void recalc_buffer(loop_filter *lf)
     lf->max_frames = (size_t)std::llround(effective_fps * clampv(lf->buffer_seconds, 10, 60));
     if (lf->max_frames < 2) lf->max_frames = 2;
     
-    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %d seconds content, captured at %.1f fps = %zu frames (ping-pong playback will be ~%.1f seconds)", 
-         lf->buffer_seconds, effective_fps, lf->max_frames, lf->max_frames * 2.0 / lf->fps);
+    double base_playback = lf->buffer_seconds * 2.0;  // ping-pong at 1x speed
+    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %d seconds content, captured at %.1f fps = %zu frames (ping-pong at 1x = %.1f seconds)", 
+         lf->buffer_seconds, effective_fps, lf->max_frames, base_playback);
 }
 
 // ----------------------------- OBS Callbacks -----------------------------
@@ -200,7 +201,18 @@ static obs_properties_t *loop_filter_properties(void *data)
 
     obs_properties_add_int(props, "buffer_seconds", "Buffer Length (seconds)", 10, 60, 1);
     obs_properties_add_bool(props, "ping_pong", "Ping-Pong (Forward/Reverse)");
-    obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
+    
+    // Add playback speed with duration info
+    auto *speed_prop = obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
+    if (lf) {
+        double base_duration = lf->ping_pong ? (lf->buffer_seconds * 2.0) : lf->buffer_seconds;
+        double actual_duration = base_duration / lf->playback_speed;
+        char speed_desc[256];
+        snprintf(speed_desc, sizeof(speed_desc), 
+            "Playback Speed (%.1fx = ~%.1f seconds playback)", 
+            lf->playback_speed, actual_duration);
+        obs_property_set_description(speed_prop, speed_desc);
+    }
     
     // Add buffer status info
     if (lf) {
@@ -242,9 +254,10 @@ static obs_properties_t *loop_filter_properties(void *data)
                     lf->frame_accum = 0.0;
                     lf->total_loops = 0;
                     double content_seconds = frame_count * lf->capture_skip_frames / lf->fps;
-                    double playback_seconds = lf->ping_pong ? (frame_count * 2.0 / lf->fps) : (frame_count / lf->fps);
-                    blog(LOG_INFO, "[" PLUGIN_ID "] Loop STARTED: %zu frames = %.1f seconds content, ping-pong playback ~%.1f seconds", 
-                         frame_count, content_seconds, playback_seconds);
+                    double playback_seconds = content_seconds / lf->playback_speed;
+                    if (lf->ping_pong) playback_seconds *= 2.0;
+                    blog(LOG_INFO, "[" PLUGIN_ID "] Loop STARTED: %zu frames = %.1f seconds content, playback at %.1fx = ~%.1f seconds", 
+                         frame_count, content_seconds, lf->playback_speed, playback_seconds);
                     obs_property_set_description(prop, "Stop Loop ⏹");
                 } else {
                     blog(LOG_WARNING, "[" PLUGIN_ID "] No frames buffered yet!");
@@ -320,7 +333,9 @@ static void loop_filter_tick(void *data, float seconds)
     }
 
     // Advance playback cursor based on fps and playback_speed
-    double step = seconds * lf->fps * lf->playback_speed;
+    // Need to account for frame skip during capture - we want to play back at the captured content rate
+    double effective_speed = lf->playback_speed / lf->capture_skip_frames;
+    double step = seconds * lf->fps * effective_speed;
     lf->frame_accum += step;
 
     size_t frames_to_advance = (size_t)lf->frame_accum;
@@ -510,9 +525,10 @@ static void loop_filter_toggle_cb(void *data, obs_hotkey_id, obs_hotkey_t *, boo
             lf->frame_accum = 0.0;
             lf->total_loops = 0;
             double content_seconds = frame_count * lf->capture_skip_frames / lf->fps;
-            double playback_seconds = lf->ping_pong ? (frame_count * 2.0 / lf->fps) : (frame_count / lf->fps);
-            blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey: Loop STARTED - %zu frames = %.1f seconds content, ping-pong playback ~%.1f seconds", 
-                 frame_count, content_seconds, playback_seconds);
+            double playback_seconds = content_seconds / lf->playback_speed;
+            if (lf->ping_pong) playback_seconds *= 2.0;
+            blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey: Loop STARTED - %zu frames = %.1f seconds content, playback at %.1fx = ~%.1f seconds", 
+                 frame_count, content_seconds, lf->playback_speed, playback_seconds);
             // Update button text if possible
             if (lf->toggle_button) {
                 obs_property_set_description(lf->toggle_button, "Stop Loop ⏹");
