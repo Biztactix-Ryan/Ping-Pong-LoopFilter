@@ -295,12 +295,15 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
 {
     auto *lf = reinterpret_cast<loop_filter*>(data);
     if (!lf || !lf->context) return;
+    
+    UNUSED_PARAMETER(effect);
 
     // Update dimensions if needed
     uint32_t w = obs_source_get_base_width(lf->context);
     uint32_t h = obs_source_get_base_height(lf->context);
     
     if (w == 0 || h == 0) {
+        obs_source_skip_video_filter(lf->context);
         return;
     }
     
@@ -321,7 +324,7 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
         if (frame_to_draw) {
             gs_texture_t *tex = gs_texrender_get_texture(frame_to_draw);
             if (tex) {
-                // Draw the buffered frame
+                // Use obs_source_draw to render the buffered frame
                 gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
                 gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
                 gs_effect_set_texture(image, tex);
@@ -332,34 +335,29 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                 return;
             }
         }
+        // If no valid frame, skip the filter
+        obs_source_skip_video_filter(lf->context);
+        return;
     }
 
-    // Default: render source and capture if not looping
+    // Default: capture source to buffer if not looping
+    // First, we need to capture the current frame
     gs_texrender_t *texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     
     if (texrender) {
+        // Render source to texrender
         if (gs_texrender_begin(texrender, w, h)) {
             vec4 clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
             gs_clear(GS_CLEAR_COLOR, &clear_color, 1.0f, 0);
             
-            // Render the source
-            if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_NO_DIRECT_RENDERING)) {
-                obs_source_process_filter_end(lf->context, effect, w, h);
+            // Render parent source
+            obs_source_t *parent = obs_filter_get_parent(lf->context);
+            if (parent) {
+                obs_source_video_render(parent);
             }
             
             gs_texrender_end(texrender);
-            
-            // Draw what we rendered
-            gs_texture_t *tex = gs_texrender_get_texture(texrender);
-            if (tex) {
-                gs_effect_t *default_effect = effect ? effect : obs_get_base_effect(OBS_EFFECT_DEFAULT);
-                gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
-                gs_effect_set_texture(image, tex);
-                
-                while (gs_effect_loop(default_effect, "Draw")) {
-                    gs_draw_sprite(tex, 0, w, h);
-                }
-            }
+        }
             
             // Capture frame to buffer if not looping (only every few frames to save memory)
             if (!lf->loop_enabled) {
@@ -378,11 +376,11 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                         // Copy the texture
                         gs_texture_t *src_tex = gs_texrender_get_texture(texrender);
                         if (src_tex) {
-                            gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-                            gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
+                            gs_effect_t *copy_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+                            gs_eparam_t *image = gs_effect_get_param_by_name(copy_effect, "image");
                             gs_effect_set_texture(image, src_tex);
                             
-                            while (gs_effect_loop(default_effect, "Draw")) {
+                            while (gs_effect_loop(copy_effect, "Draw")) {
                                 gs_draw_sprite(src_tex, 0, w, h);
                             }
                         }
@@ -411,10 +409,10 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
         }
         
         gs_texrender_destroy(texrender);
-    } else {
-        // Fallback: just pass through
-        obs_source_skip_video_filter(lf->context);
     }
+    
+    // Pass through the source video
+    obs_source_skip_video_filter(lf->context);
 }
 
 // ----------------------------- Hotkeys -----------------------------
