@@ -426,13 +426,21 @@ static void loop_filter_tick(void *data, float seconds)
         return;
     }
 
-    // Keep base size fresh (handles resolution changes)
-    try {
-        lf->base_w = obs_source_get_base_width(lf->context);
-        lf->base_h = obs_source_get_base_height(lf->context);
-    } catch (...) {
-        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception getting source dimensions in tick");
-        return;
+    // Skip tick operations if dimensions are 0
+    if (lf->base_w == 0 || lf->base_h == 0) {
+        // Try to get dimensions once per tick
+        try {
+            uint32_t w = obs_source_get_base_width(lf->context);
+            uint32_t h = obs_source_get_base_height(lf->context);
+            if (w > 0 && h > 0) {
+                lf->base_w = w;
+                lf->base_h = h;
+                blog(LOG_INFO, "[" PLUGIN_ID "] Tick: Got valid dimensions %ux%u", w, h);
+            }
+        } catch (...) {
+            // Silently ignore
+        }
+        return;  // Skip rest of tick if no dimensions
     }
 
     if (!lf->loop_enabled) {
@@ -497,30 +505,51 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
         return;
     }
 
-    const uint32_t w = loop_filter_width(lf);
-    const uint32_t h = loop_filter_height(lf);
+    // Get dimensions safely
+    uint32_t w = 0, h = 0;
+    try {
+        w = obs_source_get_base_width(lf->context);
+        h = obs_source_get_base_height(lf->context);
+    } catch (...) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Exception getting dimensions in render");
+        return;
+    }
     
     // Log dimension changes
     static uint32_t last_w = 0, last_h = 0;
+    static bool first_render = true;
+    if (first_render) {
+        blog(LOG_INFO, "[" PLUGIN_ID "] First render call, dimensions: %ux%u", w, h);
+        first_render = false;
+    }
     if (w != last_w || h != last_h) {
         blog(LOG_INFO, "[" PLUGIN_ID "] Source dimensions changed: %ux%u -> %ux%u", 
              last_w, last_h, w, h);
         last_w = w;
         last_h = h;
+        lf->base_w = w;
+        lf->base_h = h;
     }
     
-    if (w <= 0 || h <= 0) {
+    // If dimensions are invalid, do absolutely nothing - don't even try to render
+    if (w == 0 || h == 0) {
         static int skip_count = 0;
         if (++skip_count % 60 == 0) {
-            blog(LOG_WARNING, "[" PLUGIN_ID "] Skipping render - invalid dimensions: %ux%u", w, h);
+            blog(LOG_WARNING, "[" PLUGIN_ID "] Zero dimensions %ux%u, skipping all rendering", w, h);
         }
+        // Do NOT call any OBS filter functions with 0x0 dimensions
         return;
     }
 
     if (!lf->loop_enabled) {
         // Pass-through: render upstream and capture it into buffer
-        if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_ALLOW_DIRECT_RENDERING)) {
-            obs_source_process_filter_end(lf->context, nullptr, w, h);
+        try {
+            if (obs_source_process_filter_begin(lf->context, GS_RGBA, OBS_ALLOW_DIRECT_RENDERING)) {
+                obs_source_process_filter_end(lf->context, nullptr, w, h);
+            }
+        } catch (...) {
+            blog(LOG_ERROR, "[" PLUGIN_ID "] Exception during passthrough");
+            return;
         }
 
         // Now capture upstream into our circular buffer (using scratch copy)
@@ -632,9 +661,10 @@ bool obs_module_load(void)
 
         loop_filter_info.video_render = loop_filter_render;
         loop_filter_info.video_tick = loop_filter_tick;
-        loop_filter_info.get_width = loop_filter_width;
-        loop_filter_info.get_height = loop_filter_height;
-        loop_filter_info.save = loop_filter_save;
+        // Temporarily comment out width/height to see if they're the issue
+        // loop_filter_info.get_width = loop_filter_width;
+        // loop_filter_info.get_height = loop_filter_height;
+        // loop_filter_info.save = loop_filter_save;
 
         obs_register_source(&loop_filter_info);
 
