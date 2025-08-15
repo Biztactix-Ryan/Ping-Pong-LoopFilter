@@ -117,18 +117,32 @@ static void ensure_scratch(loop_filter *lf)
 {
     if (!lf->scratch && lf->base_w > 0 && lf->base_h > 0) {
         lf->scratch = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+        if (lf->scratch) {
+            blog(LOG_DEBUG, "[" PLUGIN_ID "] Created scratch texture (%ux%u)", lf->base_w, lf->base_h);
+        } else {
+            blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create scratch texture (%ux%u)", lf->base_w, lf->base_h);
+        }
     }
 }
 
 // Take upstream image into a new texrender and push into ring buffer
 static void capture_upstream_frame(loop_filter *lf)
 {
-    if (lf->base_w <= 0 || lf->base_h <= 0)
+    if (lf->base_w <= 0 || lf->base_h <= 0) {
+        static bool dimension_warning_shown = false;
+        if (!dimension_warning_shown) {
+            blog(LOG_WARNING, "[" PLUGIN_ID "] Cannot capture frame - invalid dimensions: %ux%u", 
+                 lf->base_w, lf->base_h);
+            dimension_warning_shown = true;
+        }
         return;
+    }
 
     ensure_scratch(lf);
-    if (!lf->scratch)
+    if (!lf->scratch) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Cannot capture frame - scratch texture not available");
         return;
+    }
 
     // Render upstream into scratch
     if (gs_texrender_begin(lf->scratch, lf->base_w, lf->base_h)) {
@@ -141,16 +155,21 @@ static void capture_upstream_frame(loop_filter *lf)
 
         gs_texrender_end(lf->scratch);
     } else {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to begin texrender for scratch");
         return;
     }
 
     // Duplicate the scratch into a persistent texrender for the buffer
-    if (lf->base_w <= 0 || lf->base_h <= 0)
+    if (lf->base_w <= 0 || lf->base_h <= 0) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Invalid dimensions for copy: %ux%u", lf->base_w, lf->base_h);
         return;
+    }
         
     gs_texrender_t *copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-    if (!copy)
+    if (!copy) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create copy texture for frame buffer");
         return;
+    }
 
     if (gs_texrender_begin(copy, lf->base_w, lf->base_h)) {
         gs_ortho(0.0f, (float)lf->base_w, 0.0f, (float)lf->base_h, -1.0f, 1.0f);
@@ -183,6 +202,13 @@ static void capture_upstream_frame(loop_filter *lf)
             // keep play_index sensible if we're in loop mode
             if (lf->play_index > 0) lf->play_index--;
         }
+        
+        // Log buffer status periodically
+        static int capture_count = 0;
+        if (++capture_count % 60 == 0) {  // Log every 60 frames (roughly 1 second at 60fps)
+            blog(LOG_DEBUG, "[" PLUGIN_ID "] Buffer status: %zu/%zu frames", 
+                 lf->frames.size(), lf->max_frames);
+        }
     }
 }
 
@@ -208,12 +234,19 @@ static const char *loop_filter_get_name(void *)
 
 static void *loop_filter_create(obs_data_t *settings, obs_source_t *context)
 {
+    blog(LOG_INFO, "[" PLUGIN_ID "] Creating filter instance...");
+    
     auto *lf = new loop_filter();
     lf->context = context;
 
     // Don't try to get dimensions yet - source may not be ready
     lf->base_w = 0;
     lf->base_h = 0;
+    
+    // Try to get initial dimensions (may be 0 if source not ready)
+    uint32_t initial_w = obs_source_get_base_width(context);
+    uint32_t initial_h = obs_source_get_base_height(context);
+    blog(LOG_INFO, "[" PLUGIN_ID "] Initial source dimensions: %ux%u", initial_w, initial_h);
 
     loop_filter_get_defaults(settings);
     loop_filter_update(lf, settings);
@@ -222,7 +255,8 @@ static void *loop_filter_create(obs_data_t *settings, obs_source_t *context)
 
     loop_filter_register_hotkeys(lf);
 
-    blog(LOG_INFO, "[" PLUGIN_ID "] created (filter initialized)");
+    blog(LOG_INFO, "[" PLUGIN_ID "] Filter created successfully (buffer: %d seconds, max frames: %zu)", 
+         lf->buffer_seconds, lf->max_frames);
     return lf;
 }
 
@@ -231,15 +265,23 @@ static void loop_filter_destroy(void *data)
     auto *lf = reinterpret_cast<loop_filter*>(data);
     if (!lf) return;
 
+    blog(LOG_INFO, "[" PLUGIN_ID "] Destroying filter instance...");
+    
+    size_t frame_count = 0;
     {
         std::lock_guard<std::mutex> lk(lf->frames_mtx);
+        frame_count = lf->frames.size();
         clear_frames_locked(lf);
     }
+    
+    blog(LOG_INFO, "[" PLUGIN_ID "] Cleared %zu buffered frames", frame_count);
+    
     if (lf->scratch) {
         gs_texrender_destroy(lf->scratch);
         lf->scratch = nullptr;
     }
 
+    blog(LOG_INFO, "[" PLUGIN_ID "] Filter destroyed");
     delete lf;
 }
 
@@ -284,11 +326,23 @@ static obs_properties_t *loop_filter_properties(void *data)
         [](obs_properties_t*, obs_property_t*, void *data) -> bool {
             auto *lf = reinterpret_cast<loop_filter*>(data);
             if (!lf) return false;
+            
             lf->loop_enabled = !lf->loop_enabled;
+            blog(LOG_INFO, "[" PLUGIN_ID "] Button toggle: %s", 
+                 lf->loop_enabled ? "ENABLED" : "DISABLED");
+            
             // reposition to end for natural start
             std::lock_guard<std::mutex> lk(lf->frames_mtx);
-            lf->play_index = lf->frames.empty() ? 0 : lf->frames.size()-1;
-            lf->direction = -1; // start moving backward so it looks continuous
+            size_t frame_count = lf->frames.size();
+            if (lf->loop_enabled && frame_count > 0) {
+                lf->play_index = frame_count - 1;
+                lf->direction = -1; // start moving backward so it looks continuous
+                blog(LOG_INFO, "[" PLUGIN_ID "] Starting from frame %zu of %zu", 
+                     lf->play_index, frame_count);
+            } else if (lf->loop_enabled && frame_count == 0) {
+                blog(LOG_WARNING, "[" PLUGIN_ID "] No frames buffered yet!");
+                lf->loop_enabled = false;
+            }
             return true;
         }
     );
@@ -383,7 +437,23 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
 
     const uint32_t w = loop_filter_width(lf);
     const uint32_t h = loop_filter_height(lf);
-    if (w <= 0 || h <= 0) return;
+    
+    // Log dimension changes
+    static uint32_t last_w = 0, last_h = 0;
+    if (w != last_w || h != last_h) {
+        blog(LOG_INFO, "[" PLUGIN_ID "] Source dimensions changed: %ux%u -> %ux%u", 
+             last_w, last_h, w, h);
+        last_w = w;
+        last_h = h;
+    }
+    
+    if (w <= 0 || h <= 0) {
+        static int skip_count = 0;
+        if (++skip_count % 60 == 0) {
+            blog(LOG_WARNING, "[" PLUGIN_ID "] Skipping render - invalid dimensions: %ux%u", w, h);
+        }
+        return;
+    }
 
     if (!lf->loop_enabled) {
         // Pass-through: render upstream and capture it into buffer
@@ -446,13 +516,23 @@ static void loop_filter_toggle_cb(void *data, obs_hotkey_id, obs_hotkey_t *, boo
     if (!lf) return;
 
     lf->loop_enabled = !lf->loop_enabled;
+    
+    blog(LOG_INFO, "[" PLUGIN_ID "] Loop toggled: %s", lf->loop_enabled ? "ENABLED" : "DISABLED");
 
     if (lf->loop_enabled) {
         // Start from the latest frame and head backward first (looks continuous)
         std::lock_guard<std::mutex> lk(lf->frames_mtx);
-        lf->play_index = lf->frames.empty() ? 0 : lf->frames.size() - 1;
-        lf->direction = -1;
-        lf->frame_accum = 0.0;
+        size_t frame_count = lf->frames.size();
+        if (frame_count > 0) {
+            lf->play_index = frame_count - 1;
+            lf->direction = -1;
+            lf->frame_accum = 0.0;
+            blog(LOG_INFO, "[" PLUGIN_ID "] Starting playback from frame %zu of %zu", 
+                 lf->play_index, frame_count);
+        } else {
+            blog(LOG_WARNING, "[" PLUGIN_ID "] No frames in buffer to play!");
+            lf->loop_enabled = false;  // Disable if no frames
+        }
     }
 }
 
