@@ -10,6 +10,7 @@
 #include <string>
 #include <mutex>
 #include <cmath>
+#include <cstdio>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-pingpong-loop-filter", "en-US")
@@ -44,6 +45,7 @@ struct loop_filter {
     uint32_t base_h = 0;
     double fps = 60.0;
     size_t max_frames = 0;
+    int capture_skip_frames = 2;    // Capture every Nth frame
 
     // Capture + Playback
     std::deque<gs_texrender_t*> frames;   // FIFO of frame textures
@@ -53,6 +55,7 @@ struct loop_filter {
     size_t play_index = 0;          // 0..frames.size()-1
     int direction = +1;             // +1 forward, -1 backward
     double frame_accum = 0.0;       // fractional frame step timing
+    int total_loops = 0;            // Track how many times we've looped
 
     // Hotkey
     obs_hotkey_id hotkey_toggle = OBS_INVALID_HOTKEY_ID;
@@ -60,6 +63,9 @@ struct loop_filter {
     // Frame capture state
     bool dimensions_valid = false;
     int frame_skip_counter = 0;  // To reduce capture rate
+    
+    // UI state
+    obs_property_t *toggle_button = nullptr;
 };
 
 // ----------------------------- Forward Decls -----------------------------
@@ -101,11 +107,14 @@ static void recalc_buffer(loop_filter *lf)
         lf->fps = 60.0;
     }
 
-    lf->max_frames = (size_t)std::llround(lf->fps * clampv(lf->buffer_seconds, 10, 60));
+    // Calculate frames based on actual capture rate (every Nth frame)
+    // This maintains a circular buffer that captures 'buffer_seconds' worth of content
+    double effective_fps = lf->fps / lf->capture_skip_frames;
+    lf->max_frames = (size_t)std::llround(effective_fps * clampv(lf->buffer_seconds, 10, 60));
     if (lf->max_frames < 2) lf->max_frames = 2;
     
-    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer recalculated: %zu max frames at %.1f fps", 
-         lf->max_frames, lf->fps);
+    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %d seconds content, captured at %.1f fps = %zu frames (ping-pong playback will be ~%.1f seconds)", 
+         lf->buffer_seconds, effective_fps, lf->max_frames, lf->max_frames * 2.0 / lf->fps);
 }
 
 // ----------------------------- OBS Callbacks -----------------------------
@@ -185,35 +194,94 @@ static void loop_filter_update(void *data, obs_data_t *settings)
 
 static obs_properties_t *loop_filter_properties(void *data)
 {
-    UNUSED_PARAMETER(data);
+    auto *lf = reinterpret_cast<loop_filter*>(data);
 
     obs_properties_t *props = obs_properties_create();
 
     obs_properties_add_int(props, "buffer_seconds", "Buffer Length (seconds)", 10, 60, 1);
     obs_properties_add_bool(props, "ping_pong", "Ping-Pong (Forward/Reverse)");
     obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
+    
+    // Add buffer status info
+    if (lf) {
+        std::lock_guard<std::mutex> lk(lf->frames_mtx);
+        size_t frame_count = lf->frames.size();
+        double content_seconds = frame_count * lf->capture_skip_frames / lf->fps;
+        char status_text[256];
+        if (lf->loop_enabled) {
+            snprintf(status_text, sizeof(status_text), 
+                "🔄 LOOPING - Buffer: %zu frames (%.1f seconds)", 
+                frame_count, content_seconds);
+        } else if (frame_count > 0) {
+            snprintf(status_text, sizeof(status_text), 
+                "📼 Buffer: %zu/%zu frames (%.1f/%.1f seconds)", 
+                frame_count, lf->max_frames, content_seconds, (double)lf->buffer_seconds);
+        } else {
+            snprintf(status_text, sizeof(status_text), "📼 Buffer: Empty");
+        }
+        obs_properties_add_text(props, "buffer_status", "Status", OBS_TEXT_INFO);
+        obs_property_set_description(obs_properties_get(props, "buffer_status"), status_text);
+    }
 
     // A button to toggle loop state from UI
-    obs_properties_add_button(props, "toggle_loop", "Toggle Loop",
-        [](obs_properties_t*, obs_property_t*, void *data) -> bool {
+    lf->toggle_button = obs_properties_add_button(props, "toggle_loop", 
+        lf->loop_enabled ? "Stop Loop ⏹" : "Start Loop ▶",
+        [](obs_properties_t *props, obs_property_t *prop, void *data) -> bool {
             auto *lf = reinterpret_cast<loop_filter*>(data);
             if (!lf) return false;
             
             lf->loop_enabled = !lf->loop_enabled;
-            blog(LOG_INFO, "[" PLUGIN_ID "] Button toggle: %s", 
-                 lf->loop_enabled ? "ENABLED" : "DISABLED");
             
             std::lock_guard<std::mutex> lk(lf->frames_mtx);
             size_t frame_count = lf->frames.size();
-            if (lf->loop_enabled && frame_count > 0) {
-                lf->play_index = frame_count - 1;
-                lf->direction = -1;
-                blog(LOG_INFO, "[" PLUGIN_ID "] Starting from frame %zu of %zu", 
-                     lf->play_index, frame_count);
-            } else if (lf->loop_enabled && frame_count == 0) {
-                blog(LOG_WARNING, "[" PLUGIN_ID "] No frames buffered yet!");
-                lf->loop_enabled = false;
+            
+            if (lf->loop_enabled) {
+                if (frame_count > 0) {
+                    lf->play_index = frame_count - 1;
+                    lf->direction = -1;
+                    lf->frame_accum = 0.0;
+                    lf->total_loops = 0;
+                    double content_seconds = frame_count * lf->capture_skip_frames / lf->fps;
+                    double playback_seconds = lf->ping_pong ? (frame_count * 2.0 / lf->fps) : (frame_count / lf->fps);
+                    blog(LOG_INFO, "[" PLUGIN_ID "] Loop STARTED: %zu frames = %.1f seconds content, ping-pong playback ~%.1f seconds", 
+                         frame_count, content_seconds, playback_seconds);
+                    obs_property_set_description(prop, "Stop Loop ⏹");
+                } else {
+                    blog(LOG_WARNING, "[" PLUGIN_ID "] No frames buffered yet!");
+                    lf->loop_enabled = false;
+                }
+            } else {
+                blog(LOG_INFO, "[" PLUGIN_ID "] Loop STOPPED after %d complete cycles", lf->total_loops / 2);
+                obs_property_set_description(prop, "Start Loop ▶");
             }
+            return true;
+        }
+    );
+
+    // A button to clear the buffer
+    obs_properties_add_button(props, "clear_buffer", "Clear Buffer 🗑️",
+        [](obs_properties_t*, obs_property_t*, void *data) -> bool {
+            auto *lf = reinterpret_cast<loop_filter*>(data);
+            if (!lf) return false;
+            
+            // Stop looping first if active
+            if (lf->loop_enabled) {
+                lf->loop_enabled = false;
+                if (lf->toggle_button) {
+                    obs_property_set_description(lf->toggle_button, "Start Loop ▶");
+                }
+            }
+            
+            // Clear all frames
+            obs_enter_graphics();
+            {
+                std::lock_guard<std::mutex> lk(lf->frames_mtx);
+                size_t frame_count = lf->frames.size();
+                clear_frames_locked(lf);
+                blog(LOG_INFO, "[" PLUGIN_ID "] Buffer CLEARED: %zu frames removed", frame_count);
+            }
+            obs_leave_graphics();
+            
             return true;
         }
     );
@@ -270,8 +338,10 @@ static void loop_filter_tick(void *data, float seconds)
                 if (lf->ping_pong) {
                     lf->direction = -1;
                     if (lf->play_index > 0) lf->play_index--;
+                    lf->total_loops++;
                 } else {
                     lf->play_index = 0;
+                    lf->total_loops++;
                 }
             } else {
                 lf->play_index++;
@@ -281,8 +351,10 @@ static void loop_filter_tick(void *data, float seconds)
                 if (lf->ping_pong) {
                     lf->direction = +1;
                     if (lf->frames.size() > 1) lf->play_index++;
+                    lf->total_loops++;
                 } else {
                     lf->play_index = lf->frames.size() - 1;
+                    lf->total_loops++;
                 }
             } else {
                 lf->play_index--;
@@ -358,13 +430,14 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
             
             gs_texrender_end(texrender);
             
-            // Capture frame to buffer if not looping (only every few frames to save memory)
-            if (!lf->loop_enabled) {
-                lf->frame_skip_counter++;
-                if (lf->frame_skip_counter >= 2) {  // Capture every 2nd frame
-                    lf->frame_skip_counter = 0;
-                    
-                    std::lock_guard<std::mutex> lk(lf->frames_mtx);
+            // Capture frame to buffer (only every few frames to save memory)
+            lf->frame_skip_counter++;
+            if (lf->frame_skip_counter >= lf->capture_skip_frames) {
+                lf->frame_skip_counter = 0;
+                
+                // Only capture if not looping
+                std::lock_guard<std::mutex> lk(lf->frames_mtx);
+                if (!lf->loop_enabled) {
                     
                     // Create new texrender for this frame
                     gs_texrender_t *frame_copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
@@ -394,17 +467,19 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                             if (oldest) gs_texrender_destroy(oldest);
                         }
                         
-                        // Log periodically
-                        static int log_counter = 0;
-                        if (++log_counter % 30 == 0) {
-                            blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %zu/%zu frames", 
-                                 lf->frames.size(), lf->max_frames);
+                        // Log periodically (only when not looping)
+                        if (!lf->loop_enabled) {
+                            static int log_counter = 0;
+                            if (++log_counter % 30 == 0) {
+                                double buffer_seconds = lf->frames.size() * lf->capture_skip_frames / lf->fps;
+                                blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %zu/%zu frames (%.1f/%.1f seconds)", 
+                                     lf->frames.size(), lf->max_frames, buffer_seconds, (double)lf->buffer_seconds);
+                            }
                         }
                     } else if (frame_copy) {
                         gs_texrender_destroy(frame_copy);
                     }
                 }
-            }
         }
         
         gs_texrender_destroy(texrender);
@@ -424,20 +499,32 @@ static void loop_filter_toggle_cb(void *data, obs_hotkey_id, obs_hotkey_t *, boo
 
     lf->loop_enabled = !lf->loop_enabled;
     
-    blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey toggle: %s", lf->loop_enabled ? "ENABLED" : "DISABLED");
-
+    std::lock_guard<std::mutex> lk(lf->frames_mtx);
+    size_t frame_count = lf->frames.size();
+    
     if (lf->loop_enabled) {
-        std::lock_guard<std::mutex> lk(lf->frames_mtx);
-        size_t frame_count = lf->frames.size();
         if (frame_count > 0) {
             lf->play_index = frame_count - 1;
             lf->direction = -1;
             lf->frame_accum = 0.0;
-            blog(LOG_INFO, "[" PLUGIN_ID "] Starting playback from frame %zu of %zu", 
-                 lf->play_index, frame_count);
+            lf->total_loops = 0;
+            double content_seconds = frame_count * lf->capture_skip_frames / lf->fps;
+            double playback_seconds = lf->ping_pong ? (frame_count * 2.0 / lf->fps) : (frame_count / lf->fps);
+            blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey: Loop STARTED - %zu frames = %.1f seconds content, ping-pong playback ~%.1f seconds", 
+                 frame_count, content_seconds, playback_seconds);
+            // Update button text if possible
+            if (lf->toggle_button) {
+                obs_property_set_description(lf->toggle_button, "Stop Loop ⏹");
+            }
         } else {
             blog(LOG_WARNING, "[" PLUGIN_ID "] No frames in buffer!");
             lf->loop_enabled = false;
+        }
+    } else {
+        blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey: Loop STOPPED after %d complete cycles", lf->total_loops / 2);
+        // Update button text if possible
+        if (lf->toggle_button) {
+            obs_property_set_description(lf->toggle_button, "Start Loop ▶");
         }
     }
 }
