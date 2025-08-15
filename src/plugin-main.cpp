@@ -276,7 +276,7 @@ static obs_properties_t *loop_filter_properties(void *data)
     obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
 
     // A button to toggle loop state from UI (optional, hotkey recommended)
-    obs_property_t *btn = obs_properties_add_button(props, "toggle_loop", "Toggle Loop",
+    obs_properties_add_button(props, "toggle_loop", "Toggle Loop",
         [](obs_properties_t*, obs_property_t*, void *data) -> bool {
             auto *lf = reinterpret_cast<loop_filter*>(data);
             if (!lf) return false;
@@ -288,7 +288,6 @@ static obs_properties_t *loop_filter_properties(void *data)
             return true;
         }
     );
-    obs_property_set_modified_callback2(btn, [](void*, obs_properties_t*, obs_property_t*, obs_data_t*) { return true; });
 
     return props;
 }
