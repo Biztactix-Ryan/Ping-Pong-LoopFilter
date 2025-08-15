@@ -480,6 +480,7 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                         gs_texrender_destroy(frame_copy);
                     }
                 }
+            }
         }
         
         gs_texrender_destroy(texrender);
