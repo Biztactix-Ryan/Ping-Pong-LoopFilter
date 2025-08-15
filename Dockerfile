@@ -9,6 +9,8 @@ ARG OBS_VERSION=31.1.1
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
+    cmake \
+    extra-cmake-modules \
     git \
     wget \
     ninja-build \
@@ -58,10 +60,8 @@ RUN apt-get update && apt-get install -y \
     libwebsocketpp-dev \
     libasio-dev \
     libmbedtls-dev \
+    uthash-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Install newer CMake (Ubuntu 24.04 has 3.28+)
-RUN apt-get update && apt-get install -y cmake && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp
 

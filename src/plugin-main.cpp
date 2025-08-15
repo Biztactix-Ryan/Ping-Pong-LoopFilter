@@ -357,7 +357,6 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
             }
             
             gs_texrender_end(texrender);
-        }
             
             // Capture frame to buffer if not looping (only every few frames to save memory)
             if (!lf->loop_enabled) {
