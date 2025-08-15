@@ -6,6 +6,11 @@ set -e
 echo "=== OBS PingPong Loop Filter - Docker Build ==="
 echo ""
 
+# OBS version (can be overridden with environment variable)
+OBS_VERSION=${OBS_VERSION:-31.1.1}
+echo "Building for OBS version: $OBS_VERSION"
+echo ""
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -35,17 +40,17 @@ echo ""
 
 # Build using Docker Compose
 if command -v docker-compose &> /dev/null; then
-    docker-compose build builder
+    docker-compose build --build-arg OBS_VERSION=$OBS_VERSION builder
     docker-compose run --rm builder
 elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
-    docker compose build builder
+    docker compose build --build-arg OBS_VERSION=$OBS_VERSION builder
     docker compose run --rm builder
 else
     # Fallback to plain Docker
     echo "Building with Docker (without docker-compose)..."
-    docker build -t obs-pingpong-builder .
+    docker build --build-arg OBS_VERSION=$OBS_VERSION -t obs-pingpong-builder .
     docker run --rm -v "$(pwd)/build-output:/output" obs-pingpong-builder sh -c \
-        "cp /plugin/build_x86_64/*.so /output/ 2>/dev/null || echo 'No .so files found'"
+        "cp /plugin/build/*.so /output/ 2>/dev/null || echo 'No .so files found'"
 fi
 
 echo ""

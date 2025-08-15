@@ -1,13 +1,18 @@
 # Multi-stage Dockerfile for building OBS PingPong Loop Filter
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Build argument for OBS version (default to 31.1.1)
+ARG OBS_VERSION=31.1.1
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    cmake \
     git \
+    wget \
+    ninja-build \
+    pkg-config \
     libcurl4-openssl-dev \
     libavcodec-dev \
     libavdevice-dev \
@@ -22,18 +27,13 @@ RUN apt-get update && apt-get install -y \
     libxcb-shm0-dev \
     libxcb-randr0-dev \
     libxcb-xfixes0-dev \
-    libxcb-shape0-dev \
     libxcb-composite0-dev \
-    libxcb-image0-dev \
-    libxcb-util-dev \
     libxcb1-dev \
     libxcomposite-dev \
     libxinerama-dev \
     libv4l-dev \
-    libvlc-dev \
     libfreetype6-dev \
     libfontconfig-dev \
-    libjack-jackd2-dev \
     libpulse-dev \
     libasound2-dev \
     libgl1-mesa-dev \
@@ -44,18 +44,29 @@ RUN apt-get update && apt-get install -y \
     libpci-dev \
     swig \
     python3-dev \
-    qtbase5-dev \
-    qtbase5-private-dev \
-    libqt5svg5-dev \
-    qtwayland5 \
-    wget \
-    ninja-build \
+    libqt6svg6-dev \
+    qt6-base-dev \
+    qt6-base-private-dev \
+    qt6-wayland \
+    libpipewire-0.3-dev \
+    libxss-dev \
+    libgbm-dev \
+    libdrm-dev \
+    libudev-dev \
+    librist-dev \
+    libsrt-openssl-dev \
+    libwebsocketpp-dev \
+    libasio-dev \
+    libmbedtls-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install newer CMake (Ubuntu 24.04 has 3.28+)
+RUN apt-get update && apt-get install -y cmake && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp
 
 # Download and build OBS Studio (we need libobs headers and libraries)
-RUN git clone --recursive --depth 1 --branch 31.1.1 https://github.com/obsproject/obs-studio.git && \
+RUN git clone --recursive --depth 1 --branch ${OBS_VERSION} https://github.com/obsproject/obs-studio.git && \
     cd obs-studio && \
     mkdir build && cd build && \
     cmake .. \
@@ -63,13 +74,10 @@ RUN git clone --recursive --depth 1 --branch 31.1.1 https://github.com/obsprojec
         -DENABLE_BROWSER=OFF \
         -DENABLE_VST=OFF \
         -DENABLE_SCRIPTING=OFF \
-        -DENABLE_PIPEWIRE=OFF \
-        -DENABLE_WAYLAND=OFF \
         -DENABLE_AJA=OFF \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -DLINUX_PORTABLE=OFF \
         -DENABLE_UNIT_TESTS=OFF \
-        -DENABLE_FRONTEND_API=OFF \
         -DENABLE_UI=OFF \
         -G Ninja && \
     ninja && \
@@ -87,7 +95,7 @@ RUN cmake -B build \
     cmake --build build
 
 # Output stage - extract just the built plugin
-FROM ubuntu:22.04 AS runtime
+FROM ubuntu:24.04 AS runtime
 
 RUN mkdir -p /output
 

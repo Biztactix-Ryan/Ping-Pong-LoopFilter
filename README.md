@@ -12,9 +12,9 @@ A video filter plugin for OBS Studio that creates a seamless ping-pong loop effe
 
 ## Installation
 
-### Building with Docker (Recommended)
+### Building with Docker (Recommended for Linux/macOS)
 
-The easiest way to build the plugin is using Docker, which handles all dependencies automatically.
+The easiest way to build the plugin on Linux/macOS is using Docker, which handles all dependencies automatically.
 
 #### Prerequisites
 - Docker installed ([Get Docker](https://docs.docker.com/get-docker/))
@@ -27,14 +27,57 @@ The easiest way to build the plugin is using Docker, which handles all dependenc
 git clone https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter.git
 cd Ping-Pong-LoopFilter
 
-# Build the plugin
+# Build the plugin (default: OBS 31.1.1)
 ./build-docker.sh
+
+# Build for a specific OBS version
+OBS_VERSION=30.2.3 ./build-docker.sh
 
 # The plugin will be in build-output/
 ls build-output/
 ```
 
 The built plugin (.so file for Linux) will be in the `build-output/` directory.
+
+### Building on Windows
+
+#### Prerequisites
+- Visual Studio 2022 (Community Edition or higher)
+- CMake 3.28+ ([Download](https://cmake.org/download/))
+- Git
+
+#### Quick Build with PowerShell
+
+```powershell
+# Clone the repository
+git clone https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter.git
+cd Ping-Pong-LoopFilter
+
+# Run from Visual Studio 2022 Developer PowerShell
+.\build-windows.ps1
+
+# Or specify OBS version
+.\build-windows.ps1 -OBSVersion 30.2.3
+
+# Clean build
+.\build-windows.ps1 -Clean
+```
+
+#### Quick Build with Command Prompt
+
+```cmd
+# Run from Visual Studio 2022 Developer Command Prompt
+build-windows.bat
+
+# Or specify OBS version
+build-windows.bat 30.2.3
+```
+
+The script will:
+1. Download OBS dependencies automatically
+2. Download and build OBS libraries
+3. Build the plugin
+4. Offer to install it to your user directory
 
 ### Building from Source (Advanced)
 

@@ -21,6 +21,8 @@
 !.dockerignore
 !build-docker.sh
 !clean-docker.sh
+!build-windows.bat
+!build-windows.ps1
 
 # Exclude lock files
 *.lock.json
