@@ -284,9 +284,15 @@ static obs_properties_t *loop_filter_properties(void *data)
                 frame_count, content_seconds);
         } else if (frame_count > 0) {
             int percent = (int)((frame_count * 100) / lf->max_frames);
-            snprintf(status_text, sizeof(status_text), 
-                "📼 Buffer: %zu/%zu frames (%d%%) | %.1f/%.1f seconds", 
-                frame_count, lf->max_frames, percent, content_seconds, (double)lf->buffer_seconds);
+            if (frame_count >= lf->max_frames) {
+                snprintf(status_text, sizeof(status_text), 
+                    "✅ BUFFER FULL: %zu frames (%.1f seconds) - Ready to loop!", 
+                    frame_count, content_seconds);
+            } else {
+                snprintf(status_text, sizeof(status_text), 
+                    "📼 RECORDING: %zu/%zu frames (%d%%) | %.1f/%.1f seconds", 
+                    frame_count, lf->max_frames, percent, content_seconds, (double)lf->buffer_seconds);
+            }
         } else {
             snprintf(status_text, sizeof(status_text), 
                 "⏸️ READY: Buffer empty - video will be captured when playing");
@@ -356,6 +362,9 @@ static obs_properties_t *loop_filter_properties(void *data)
             }
             obs_leave_graphics();
             
+            // Force UI update to show empty buffer
+            obs_source_update_properties(lf->context);
+            
             return true;
         }
     );
@@ -377,8 +386,19 @@ static void loop_filter_tick(void *data, float seconds)
     auto *lf = reinterpret_cast<loop_filter*>(data);
     if (!lf || !lf->context) return;
 
-    // Track time for UI updates (but don't force refresh - it interferes with controls)
-    lf->last_ui_update += seconds;
+    // Update UI periodically when recording to show buffer fill progress
+    // But NOT when looping (to avoid interfering with controls)
+    if (!lf->loop_enabled) {
+        lf->last_ui_update += seconds;
+        if (lf->last_ui_update >= 1.0) {
+            lf->last_ui_update = 0.0;
+            // Only update properties if we're actively recording
+            std::lock_guard<std::mutex> lk(lf->frames_mtx);
+            if (lf->frames.size() > 0 && lf->frames.size() < lf->max_frames) {
+                obs_source_update_properties(lf->context);
+            }
+        }
+    }
 
     // Update dimensions
     uint32_t w = obs_source_get_base_width(lf->context);
@@ -396,10 +416,12 @@ static void loop_filter_tick(void *data, float seconds)
         return;
     }
 
-    // Advance playback cursor based on fps and playback_speed
-    // Need to account for frame skip during capture - we want to play back at the captured content rate
-    double effective_speed = lf->playback_speed / lf->capture_skip_frames;
-    double step = seconds * lf->fps * effective_speed;
+    // Advance playback cursor based on playback_speed
+    // Our buffer contains frames that represent content at the capture rate
+    // We want to play them back at a rate that stretches them to the original duration
+    // 300 frames over 10 seconds = 30 fps playback rate at 1x speed
+    double frames_per_second = (lf->frames.size() / (double)lf->buffer_seconds) * lf->playback_speed;
+    double step = seconds * frames_per_second;
     lf->frame_accum += step;
 
     size_t frames_to_advance = (size_t)lf->frame_accum;
