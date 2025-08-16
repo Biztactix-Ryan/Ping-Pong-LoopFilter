@@ -363,8 +363,7 @@ static obs_properties_t *loop_filter_properties(void *data)
 	// A button to toggle loop state from UI
 	const char *button_text = lf && lf->loop_enabled ? "Stop Loop ⏹" : "Start Loop ▶";
 	obs_properties_add_button(
-		props, "toggle_loop", button_text,
-		[](obs_properties_t *, obs_property_t *prop, void *data) -> bool {
+		props, "toggle_loop", button_text, [](obs_properties_t *, obs_property_t *prop, void *data) -> bool {
 			auto *lf = reinterpret_cast<loop_filter *>(data);
 			if (!lf)
 				return false;
