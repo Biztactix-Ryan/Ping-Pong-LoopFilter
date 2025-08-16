@@ -67,6 +67,9 @@ struct loop_filter {
     // UI state
     obs_property_t *toggle_button = nullptr;
     double last_ui_update = 0.0;  // Track last UI update time
+    uint64_t capture_start_time = 0;  // Track when capture started (nanoseconds)
+    size_t frames_captured_count = 0;  // Track total frames captured
+    size_t last_logged_frame_count = 0;  // Track last frame count for UI updates
 };
 
 // ----------------------------- Forward Decls -----------------------------
@@ -88,6 +91,13 @@ static void loop_filter_toggle_cb(void *data, obs_hotkey_id id, obs_hotkey_t *ho
 
 static void clear_frames_locked(loop_filter *lf)
 {
+    if (!lf) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] clear_frames_locked called with null filter");
+        return;
+    }
+    
+    blog(LOG_INFO, "[" PLUGIN_ID "] Clearing %zu frames from buffer", lf->frames.size());
+    
     for (auto *tr : lf->frames) {
         if (tr) {
             gs_texrender_destroy(tr);
@@ -97,6 +107,7 @@ static void clear_frames_locked(loop_filter *lf)
     lf->play_index = 0;
     lf->direction = +1;
     lf->frame_accum = 0.0;
+    lf->frame_skip_counter = 0;
 }
 
 static void recalc_buffer(loop_filter *lf)
@@ -104,8 +115,11 @@ static void recalc_buffer(loop_filter *lf)
     obs_video_info ovi;
     if (obs_get_video_info(&ovi)) {
         lf->fps = fps_from_ovi(ovi);
+        blog(LOG_INFO, "[" PLUGIN_ID "] Detected OBS FPS: %.2f (num=%d, den=%d)", 
+             lf->fps, ovi.fps_num, ovi.fps_den);
     } else {
         lf->fps = 60.0;
+        blog(LOG_WARNING, "[" PLUGIN_ID "] Could not get video info, defaulting to 60 fps");
     }
 
     // Calculate frames based on actual capture rate (every Nth frame)
@@ -115,8 +129,8 @@ static void recalc_buffer(loop_filter *lf)
     if (lf->max_frames < 2) lf->max_frames = 2;
     
     double base_playback = lf->buffer_seconds * 2.0;  // ping-pong at 1x speed
-    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %d seconds content, captured at %.1f fps = %zu frames (ping-pong at 1x = %.1f seconds)", 
-         lf->buffer_seconds, effective_fps, lf->max_frames, base_playback);
+    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer config: %d seconds content, skip=%d frames, effective fps=%.1f, max_frames=%zu (ping-pong at 1x = %.1f seconds)", 
+         lf->buffer_seconds, lf->capture_skip_frames, effective_fps, lf->max_frames, base_playback);
 }
 
 // ----------------------------- OBS Callbacks -----------------------------
@@ -342,7 +356,12 @@ static obs_properties_t *loop_filter_properties(void *data)
     obs_properties_add_button(props, "clear_buffer", "Clear Buffer 🗑️",
         [](obs_properties_t*, obs_property_t*, void *data) -> bool {
             auto *lf = reinterpret_cast<loop_filter*>(data);
-            if (!lf) return false;
+            if (!lf) {
+                blog(LOG_ERROR, "[" PLUGIN_ID "] Clear buffer: filter is null!");
+                return false;
+            }
+            
+            blog(LOG_INFO, "[" PLUGIN_ID "] Clear buffer button pressed");
             
             // Stop looping first if active
             if (lf->loop_enabled) {
@@ -352,15 +371,23 @@ static obs_properties_t *loop_filter_properties(void *data)
                 }
             }
             
-            // Clear all frames
+            // Clear all frames with extra safety checks
+            size_t frame_count = 0;
             obs_enter_graphics();
             {
                 std::lock_guard<std::mutex> lk(lf->frames_mtx);
-                size_t frame_count = lf->frames.size();
-                clear_frames_locked(lf);
-                blog(LOG_INFO, "[" PLUGIN_ID "] Buffer CLEARED: %zu frames removed", frame_count);
+                frame_count = lf->frames.size();
+                if (frame_count > 0) {
+                    clear_frames_locked(lf);
+                    // Reset capture tracking
+                    lf->capture_start_time = 0;
+                    lf->frames_captured_count = 0;
+                    lf->last_logged_frame_count = 0;
+                }
             }
             obs_leave_graphics();
+            
+            blog(LOG_INFO, "[" PLUGIN_ID "] Buffer CLEARED: %zu frames removed", frame_count);
             
             // Force UI update to show empty buffer
             obs_source_update_properties(lf->context);
@@ -392,10 +419,19 @@ static void loop_filter_tick(void *data, float seconds)
         lf->last_ui_update += seconds;
         if (lf->last_ui_update >= 1.0) {
             lf->last_ui_update = 0.0;
-            // Only update properties if we're actively recording
+            // Update properties if we're actively recording or just filled
             std::lock_guard<std::mutex> lk(lf->frames_mtx);
-            if (lf->frames.size() > 0 && lf->frames.size() < lf->max_frames) {
-                obs_source_update_properties(lf->context);
+            size_t frame_count = lf->frames.size();
+            if (frame_count > 0) {
+                // Always update when buffer just filled
+                bool just_filled = (lf->last_logged_frame_count < lf->max_frames && frame_count >= lf->max_frames);
+                if (just_filled || frame_count < lf->max_frames) {
+                    obs_source_update_properties(lf->context);
+                    if (just_filled) {
+                        blog(LOG_INFO, "[" PLUGIN_ID "] Buffer FULL! %zu frames captured", frame_count);
+                    }
+                }
+                lf->last_logged_frame_count = frame_count;
             }
         }
     }
@@ -540,6 +576,14 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                 std::lock_guard<std::mutex> lk(lf->frames_mtx);
                 if (!lf->loop_enabled) {
                     
+                    // Track capture start
+                    if (lf->frames.empty() && lf->capture_start_time == 0) {
+                        lf->capture_start_time = os_gettime_ns();
+                        lf->frames_captured_count = 0;
+                        blog(LOG_INFO, "[" PLUGIN_ID "] Starting buffer capture at fps=%.2f, skip=%d", 
+                             lf->fps, lf->capture_skip_frames);
+                    }
+                    
                     // Create new texrender for this frame
                     gs_texrender_t *frame_copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
                     if (frame_copy && gs_texrender_begin(frame_copy, w, h)) {
@@ -562,19 +606,34 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                         
                         // Add to buffer
                         lf->frames.push_back(frame_copy);
+                        lf->frames_captured_count++;
+                        
                         if (lf->frames.size() > lf->max_frames) {
                             auto *oldest = lf->frames.front();
                             lf->frames.pop_front();
                             if (oldest) gs_texrender_destroy(oldest);
                         }
                         
-                        // Log periodically (only when not looping)
+                        // Log periodically and when buffer fills
                         if (!lf->loop_enabled) {
                             static int log_counter = 0;
-                            if (++log_counter % 30 == 0) {
+                            bool should_log = (++log_counter % 30 == 0) || (lf->frames.size() == lf->max_frames);
+                            
+                            if (should_log && lf->capture_start_time > 0) {
+                                double elapsed = (os_gettime_ns() - lf->capture_start_time) / 1000000000.0;
                                 double buffer_seconds = lf->frames.size() * lf->capture_skip_frames / lf->fps;
-                                blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %zu/%zu frames (%.1f/%.1f seconds)", 
-                                     lf->frames.size(), lf->max_frames, buffer_seconds, (double)lf->buffer_seconds);
+                                double capture_rate = lf->frames_captured_count / elapsed;
+                                blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %zu/%zu frames (%.1f/%.1f sec content) | Elapsed: %.1fs | Capture rate: %.1f fps", 
+                                     lf->frames.size(), lf->max_frames, buffer_seconds, (double)lf->buffer_seconds, 
+                                     elapsed, capture_rate);
+                                
+                                if (lf->frames.size() == lf->max_frames) {
+                                    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer FILLED in %.1f seconds (expected ~%d seconds)", 
+                                         elapsed, lf->buffer_seconds);
+                                    // Reset for next capture
+                                    lf->capture_start_time = 0;
+                                    lf->frames_captured_count = 0;
+                                }
                             }
                         }
                     } else if (frame_copy) {
