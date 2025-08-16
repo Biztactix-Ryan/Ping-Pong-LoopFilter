@@ -1,104 +1,159 @@
-# OBS PingPong Loop Filter
+# Looper - OBS Studio Loop Plugin
 
-A video filter plugin for OBS Studio that creates a seamless ping-pong loop effect by recording and playing back video frames in a forward-backward-forward pattern.
+Create seamless video loops for presentations, meetings, and creative content with this powerful OBS Studio plugin.
 
-## Features
+## Overview
 
-- **Configurable Buffer Duration**: Record 10 to 60 seconds of video
-- **Ping-Pong Playback**: Smooth forward and backward playback creating a seamless loop
-- **Variable Playback Speed**: Adjust speed from 0.1x to 2.0x
-- **Hotkey Support**: Toggle loop on/off with customizable hotkeys
-- **Real-time Preview**: See live video while the buffer is recording
+Looper is an OBS Studio filter plugin that records video from any source and plays it back in a continuous loop. Perfect for virtual backgrounds, animated overlays, or creating the illusion of presence during online meetings - Looper ensures your video never looks static or frozen.
+
+### Key Features
+
+- 🔄 **Seamless Looping**: Record 10-60 seconds of video that plays continuously
+- 🎯 **Ping-Pong Mode**: Forward-backward playback for perfectly smooth loops
+- ⚡ **Variable Speed**: Adjust playback from 0.1x to 2.0x speed
+- 🎮 **Hotkey Control**: Toggle loops instantly with customizable hotkeys
+- 👁️ **Live Preview**: See your video while the buffer records
+- 💾 **Smart Memory Management**: Automatic optimization prevents crashes
+
+## Use Cases
+
+### 🏢 Virtual Meetings
+Keep your video active during long meetings - perfect for when you need to step away briefly. Your colleagues will see natural movement instead of a frozen frame.
+
+### 🎬 Content Creation
+- Create mesmerizing background loops for streams
+- Build repeating animations without video editing software
+- Design dynamic overlays that never stop moving
+
+### 📊 Presentations
+Loop product demonstrations, data visualizations, or ambient backgrounds to keep your audience engaged.
+
+### 🎨 Creative Effects
+- Generate infinite zoom effects
+- Create seamless motion backgrounds
+- Build hypnotic visual patterns
 
 ## Installation
 
-### Building with Docker (Recommended for Linux/macOS)
+### Quick Install - Download Pre-built Release
 
-The easiest way to build the plugin on Linux/macOS is using Docker, which handles all dependencies automatically.
+1. Download the latest release from the [Releases page](https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter/releases)
+2. Extract the plugin file to your OBS plugins folder:
+   - **Windows**: `C:\Program Files\obs-studio\obs-plugins\64bit\`
+   - **macOS**: `/Library/Application Support/obs-studio/plugins/`
+   - **Linux**: `~/.config/obs-studio/plugins/obs-looper/bin/64bit/`
+3. Restart OBS Studio
 
-#### Prerequisites
-- Docker installed ([Get Docker](https://docs.docker.com/get-docker/))
-- Git
+### Install from Source
 
-#### Quick Build
+#### Option 1: Docker Build (Linux/macOS) - Easiest
 
 ```bash
-# Clone the repository
+# Clone and build
 git clone https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter.git
 cd Ping-Pong-LoopFilter
-
-# Build the plugin (default: OBS 31.1.1)
 ./build-docker.sh
 
-# Build for a specific OBS version
-OBS_VERSION=30.2.3 ./build-docker.sh
-
-# The plugin will be in build-output/
-ls build-output/
+# Install the plugin
+mkdir -p ~/.config/obs-studio/plugins/obs-looper/bin/64bit/
+cp build-output/*.so ~/.config/obs-studio/plugins/obs-looper/bin/64bit/
 ```
 
-The built plugin (.so file for Linux) will be in the `build-output/` directory.
-
-### Building on Windows
-
-#### Prerequisites
-- Visual Studio 2022 (Community Edition or higher)
-- CMake 3.28+ ([Download](https://cmake.org/download/))
-- Git
-
-#### Quick Build with PowerShell
+#### Option 2: Windows PowerShell Build
 
 ```powershell
-# Clone the repository
+# Clone and build (from Visual Studio 2022 Developer PowerShell)
 git clone https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter.git
 cd Ping-Pong-LoopFilter
-
-# Run from Visual Studio 2022 Developer PowerShell
 .\build-windows.ps1
 
-# Or specify OBS version
-.\build-windows.ps1 -OBSVersion 30.2.3
-
-# Clean build
-.\build-windows.ps1 -Clean
+# The script will offer to install automatically
 ```
 
-#### Quick Build with Command Prompt
+## How to Use
 
-```cmd
-# Run from Visual Studio 2022 Developer Command Prompt
-build-windows.bat
+### Basic Setup
 
-# Or specify OBS version
-build-windows.bat 30.2.3
-```
+1. **Add Looper to a Source**
+   - Right-click any video source in OBS
+   - Select "Filters"
+   - Click "+" under Effect Filters
+   - Choose "Looper"
 
-The script will:
-1. Download OBS dependencies automatically
-2. Download and build OBS libraries
-3. Build the plugin
-4. Offer to install it to your user directory
+2. **Configure Your Loop**
+   - **Buffer Length**: How much video to record (10-60 seconds)
+   - **Ping-Pong Mode**: Enable for smooth reverse playback
+   - **Playback Speed**: Control how fast the loop plays
 
-### Building from Source (Advanced)
+3. **Start Looping**
+   - Click "Toggle Loop" in the filter properties
+   - Or use your configured hotkey (set in OBS Settings → Hotkeys)
 
-#### Prerequisites
-- CMake 3.28 or higher
-- OBS Studio 31.1.1 or higher
-- C++17 compatible compiler
-- Platform-specific build tools:
+### Pro Tips
+
+- **Meeting Mode**: Record 30 seconds of natural movement (nodding, blinking, small gestures) then enable the loop
+- **Creative Loops**: Use 60-second buffers for complex animated backgrounds
+- **Performance**: Lower resolution sources use less memory and run smoother
+
+## How It Works
+
+Looper operates in two intelligent modes:
+
+**Recording Mode** (Loop Off)
+- Continuously captures frames to a circular buffer
+- Shows live video to your audience
+- Automatically manages memory usage
+
+**Playback Mode** (Loop On)  
+- Plays your recorded buffer seamlessly
+- In ping-pong mode: plays forward, then backward, then forward again
+- Creates natural-looking continuous motion
+
+## Performance Guide
+
+### Memory Requirements
+
+| Resolution | 30 FPS | 60 FPS |
+|------------|--------|---------|
+| 720p | ~3 GB (30s) | ~6 GB (30s) |
+| 1080p | ~7.5 GB (30s) | ~15 GB (30s) |
+| 4K | ~30 GB (30s) | ~60 GB (30s) |
+
+### Recommended Settings
+
+- **Basic Systems** (4GB VRAM): 720p, 10-20 second buffers
+- **Standard Systems** (8GB VRAM): 1080p, 30-40 second buffers
+- **High-End Systems** (16GB+ VRAM): Any resolution, full 60 second buffers
+
+## Troubleshooting
+
+**Loop won't start?**
+- Check available GPU memory
+- Try reducing buffer length or source resolution
+
+**Stuttering playback?**
+- Lower the source resolution
+- Reduce buffer duration
+- Close other GPU-intensive applications
+
+**Buffer clears unexpectedly?**
+- This is normal when resolution changes
+- Ensure your source maintains consistent resolution
+
+## Building from Source
+
+### Prerequisites
+
+- CMake 3.28+
+- C++17 compiler
+- Platform-specific tools:
   - **Windows**: Visual Studio 2022
   - **macOS**: Xcode 16.0+
-  - **Linux**: GCC or Clang with build-essential, libobs-dev
+  - **Linux**: GCC/Clang with build-essential
 
-#### Manual Build Instructions
+### Build Commands
 
-1. Clone the repository:
-```bash
-git clone https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter.git
-cd Ping-Pong-LoopFilter
-```
-
-2. Configure with CMake:
+#### Configure
 ```bash
 # Linux
 cmake --preset ubuntu-x86_64
@@ -110,7 +165,7 @@ cmake --preset macos
 cmake --preset windows-x64
 ```
 
-3. Build the plugin:
+#### Build
 ```bash
 # Linux
 cmake --build build_x86_64 --config RelWithDebInfo
@@ -122,152 +177,60 @@ cmake --build build_macos --config RelWithDebInfo
 cmake --build build_x64 --config RelWithDebInfo
 ```
 
-4. Install the plugin:
+### Docker Build (Linux/macOS)
 
-#### Linux Installation
 ```bash
-# Create plugin directory
-mkdir -p ~/.config/obs-studio/plugins/obs-pingpong-loop-filter/bin/64bit/
+# Build with Docker (handles all dependencies)
+./build-docker.sh
 
-# Copy the plugin (from Docker build)
-cp build-output/*.so ~/.config/obs-studio/plugins/obs-pingpong-loop-filter/bin/64bit/
+# Specify OBS version
+OBS_VERSION=30.2.3 ./build-docker.sh
 
-# Or from manual build
-cp build_x86_64/*.so ~/.config/obs-studio/plugins/obs-pingpong-loop-filter/bin/64bit/
+# Output will be in build-output/
 ```
 
-#### Windows Installation
-- Copy the .dll file to: `C:\Program Files\obs-studio\obs-plugins\64bit\`
+### Windows Scripts
 
-#### macOS Installation  
-- Copy the .dylib file to: `/Library/Application Support/obs-studio/plugins/`
+```powershell
+# PowerShell (Visual Studio 2022 Developer PowerShell)
+.\build-windows.ps1
 
-After installation, restart OBS Studio.
+# Command Prompt (Visual Studio 2022 Developer Command Prompt)
+build-windows.bat
+```
 
-## Usage
+## Technical Details
 
-1. Add the filter to any video source:
-   - Right-click on a source in OBS
-   - Select "Filters"
-   - Click the "+" button under "Effect Filters"
-   - Choose "PingPong Loop Filter"
+### Stability Features (v1.1.0)
 
-2. Configure the filter settings:
-   - **Buffer Length**: Set the duration of the loop (10-60 seconds)
-   - **Ping-Pong Mode**: Enable for forward-backward playback, disable for forward-only loop
-   - **Playback Speed**: Adjust the speed of playback
+- **Memory Protection**: Automatic 4GB limit prevents crashes
+- **Thread Safety**: Proper mutex synchronization
+- **Resource Management**: RAII pattern for GPU textures
+- **Error Recovery**: Graceful fallback on allocation failures
+- **Overflow Protection**: Safe counter handling for long streams
 
-3. Start the loop:
-   - Click "Toggle Loop" button in the filter properties, or
-   - Use the assigned hotkey (configure in OBS Settings → Hotkeys)
+### Architecture
 
-## How It Works
-
-The filter operates in two modes:
-
-### Recording Mode (Loop Disabled)
-- Video frames pass through unchanged to the output
-- Frames are continuously recorded into a circular buffer
-- Oldest frames are discarded when buffer is full
-
-### Playback Mode (Loop Enabled)
-- Buffered frames are played back in sequence
-- When reaching the end, playback reverses direction
-- Creates a seamless ping-pong effect
-- Live input is ignored during playback
-
-## Performance Considerations
-
-### Memory Usage Estimates
-
-| Resolution | FPS | Memory per Second | 30s Buffer | 60s Buffer |
-|------------|-----|-------------------|------------|------------|
-| 720p       | 30  | ~100 MB          | ~3 GB      | ~6 GB      |
-| 1080p      | 30  | ~250 MB          | ~7.5 GB    | ~15 GB     |
-| 1080p      | 60  | ~500 MB          | ~15 GB     | ~30 GB     |
-| 1440p      | 60  | ~900 MB          | ~27 GB     | ~54 GB     |
-| 4K         | 60  | ~2 GB            | ~60 GB     | ~120 GB    |
-
-**Note**: The plugin includes automatic memory limiting (default 4GB) to prevent excessive GPU memory usage. If your desired buffer size exceeds the memory limit, frames will be automatically reduced.
-
-### Performance Tuning Guide
-
-1. **Memory Management**
-   - The plugin automatically limits memory usage to 4GB by default
-   - If you need more buffer capacity, ensure you have sufficient GPU memory
-   - Resolution changes automatically clear the buffer to prevent memory issues
-
-2. **Optimal Settings by System**
-   - **Low-end (< 4GB VRAM)**: 720p sources, 10-20 second buffers
-   - **Mid-range (4-8GB VRAM)**: 1080p sources, 20-40 second buffers  
-   - **High-end (> 8GB VRAM)**: Any resolution, full 60 second buffers
-
-3. **Reducing Memory Usage**
-   - Lower the source resolution before applying the filter
-   - Reduce buffer duration
-   - Close other GPU-intensive applications
-
-### Stability Improvements (v1.1.0)
-
-The following issues have been addressed to improve long-term stability:
-
-1. **Memory Leak Fixes**
-   - Fixed GPU texture leak in error paths
-   - Removed unsafe property pointer storage
-   - Added proper cleanup for all GPU resources
-
-2. **Race Condition Fixes**
-   - Fixed frame buffer access synchronization
-   - Ensured thread-safe frame rendering
-
-3. **Resource Management**
-   - Added automatic memory limiting
-   - Resolution changes now clear buffer
-   - Added overflow protection for long-running streams
-
-4. **Error Handling**
-   - Added null checks for GPU resource allocation
-   - Improved error logging
-   - Graceful fallback on resource allocation failure
-
-### Known Limitations
-
-- Maximum buffer memory limited to 4GB by default (configurable in code)
-- Resolution changes will clear the current buffer
-- Very high resolutions (4K+) may require significant GPU memory
-- Long-running streams (days/weeks) will periodically reset counters for stability
-
-### Troubleshooting
-
-**Issue**: "Buffer won't fill completely"
-- **Solution**: Check GPU memory usage - the plugin may be hitting memory limits
-
-**Issue**: "Playback stutters or freezes"
-- **Solution**: Reduce buffer size or source resolution
-
-**Issue**: "OBS crashes when using the filter"
-- **Solution**: Update to the latest version which includes memory leak fixes
-
-**Issue**: "Buffer clears unexpectedly"
-- **Solution**: This happens on resolution changes - ensure stable source resolution
-
-### Best Practices for Long Streams
-
-1. **Monitor GPU Memory**: Use GPU monitoring tools to track memory usage
-2. **Test Settings**: Run a test stream for 10-15 minutes before going live
-3. **Resolution Stability**: Ensure your source maintains consistent resolution
-4. **Periodic Restart**: For 24/7 streams, consider restarting OBS weekly
-5. **Error Logs**: Check OBS logs for any memory warnings from the plugin
+- Circular frame buffer using `std::deque`
+- GPU texture rendering with `gs_texrender`
+- Time-based frame synchronization
+- Dynamic resolution adaptation
 
 ## License
 
-This project is licensed under the GNU General Public License v2.0 - see the LICENSE file for details.
+GNU General Public License v2.0 - see LICENSE file for details.
 
 ## Author
 
-Biztactix
+Created by Biztactix
+
+## Support
+
+- [Report Issues](https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter/issues)
+- [Latest Releases](https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter/releases)
 
 ## Acknowledgments
 
-- OBS Studio team for the plugin API and template
-- Community contributors for testing and feedback
+- OBS Studio team for the excellent plugin API
+- Community testers and contributors
+- Everyone who uses Looper to stay "present" in their meetings 😉
