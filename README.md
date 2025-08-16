@@ -178,9 +178,86 @@ The filter operates in two modes:
 
 ## Performance Considerations
 
-- Each second of buffer at 1080p 60fps uses approximately 500MB of GPU memory
-- Reduce buffer duration for lower-end systems
-- Consider lowering source resolution if experiencing performance issues
+### Memory Usage Estimates
+
+| Resolution | FPS | Memory per Second | 30s Buffer | 60s Buffer |
+|------------|-----|-------------------|------------|------------|
+| 720p       | 30  | ~100 MB          | ~3 GB      | ~6 GB      |
+| 1080p      | 30  | ~250 MB          | ~7.5 GB    | ~15 GB     |
+| 1080p      | 60  | ~500 MB          | ~15 GB     | ~30 GB     |
+| 1440p      | 60  | ~900 MB          | ~27 GB     | ~54 GB     |
+| 4K         | 60  | ~2 GB            | ~60 GB     | ~120 GB    |
+
+**Note**: The plugin includes automatic memory limiting (default 4GB) to prevent excessive GPU memory usage. If your desired buffer size exceeds the memory limit, frames will be automatically reduced.
+
+### Performance Tuning Guide
+
+1. **Memory Management**
+   - The plugin automatically limits memory usage to 4GB by default
+   - If you need more buffer capacity, ensure you have sufficient GPU memory
+   - Resolution changes automatically clear the buffer to prevent memory issues
+
+2. **Optimal Settings by System**
+   - **Low-end (< 4GB VRAM)**: 720p sources, 10-20 second buffers
+   - **Mid-range (4-8GB VRAM)**: 1080p sources, 20-40 second buffers  
+   - **High-end (> 8GB VRAM)**: Any resolution, full 60 second buffers
+
+3. **Reducing Memory Usage**
+   - Lower the source resolution before applying the filter
+   - Reduce buffer duration
+   - Close other GPU-intensive applications
+
+### Stability Improvements (v1.1.0)
+
+The following issues have been addressed to improve long-term stability:
+
+1. **Memory Leak Fixes**
+   - Fixed GPU texture leak in error paths
+   - Removed unsafe property pointer storage
+   - Added proper cleanup for all GPU resources
+
+2. **Race Condition Fixes**
+   - Fixed frame buffer access synchronization
+   - Ensured thread-safe frame rendering
+
+3. **Resource Management**
+   - Added automatic memory limiting
+   - Resolution changes now clear buffer
+   - Added overflow protection for long-running streams
+
+4. **Error Handling**
+   - Added null checks for GPU resource allocation
+   - Improved error logging
+   - Graceful fallback on resource allocation failure
+
+### Known Limitations
+
+- Maximum buffer memory limited to 4GB by default (configurable in code)
+- Resolution changes will clear the current buffer
+- Very high resolutions (4K+) may require significant GPU memory
+- Long-running streams (days/weeks) will periodically reset counters for stability
+
+### Troubleshooting
+
+**Issue**: "Buffer won't fill completely"
+- **Solution**: Check GPU memory usage - the plugin may be hitting memory limits
+
+**Issue**: "Playback stutters or freezes"
+- **Solution**: Reduce buffer size or source resolution
+
+**Issue**: "OBS crashes when using the filter"
+- **Solution**: Update to the latest version which includes memory leak fixes
+
+**Issue**: "Buffer clears unexpectedly"
+- **Solution**: This happens on resolution changes - ensure stable source resolution
+
+### Best Practices for Long Streams
+
+1. **Monitor GPU Memory**: Use GPU monitoring tools to track memory usage
+2. **Test Settings**: Run a test stream for 10-15 minutes before going live
+3. **Resolution Stability**: Ensure your source maintains consistent resolution
+4. **Periodic Restart**: For 24/7 streams, consider restarting OBS weekly
+5. **Error Logs**: Check OBS logs for any memory warnings from the plugin
 
 ## License
 

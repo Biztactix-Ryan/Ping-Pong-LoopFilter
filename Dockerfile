@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     libswscale-dev \
     libx264-dev \
     libx11-dev \
+    libx11-xcb-dev \
     libxcb-xinerama0-dev \
     libxcb-shm0-dev \
     libxcb-randr0-dev \
@@ -61,6 +62,7 @@ RUN apt-get update && apt-get install -y \
     libasio-dev \
     libmbedtls-dev \
     uthash-dev \
+    libva-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp

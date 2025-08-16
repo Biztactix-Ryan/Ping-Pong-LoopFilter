@@ -65,12 +65,17 @@ struct loop_filter {
     int frame_skip_counter = 0;  // To reduce capture rate
     uint64_t last_capture_time = 0;  // Track last capture time in nanoseconds
     
-    // UI state
-    obs_property_t *toggle_button = nullptr;
+    // UI state - removed toggle_button pointer to avoid lifetime issues  
     double last_ui_update = 0.0;  // Track last UI update time
     uint64_t capture_start_time = 0;  // Track when capture started (nanoseconds)
     size_t frames_captured_count = 0;  // Track total frames captured
     size_t last_logged_frame_count = 0;  // Track last frame count for UI updates
+    
+    // Resource management
+    size_t max_memory_mb = 4096;  // Maximum memory usage in MB (default 4GB)
+    size_t current_memory_usage = 0;  // Track current memory usage
+    uint32_t last_width = 0;  // Track resolution changes
+    uint32_t last_height = 0;
 };
 
 // ----------------------------- Forward Decls -----------------------------
@@ -114,6 +119,14 @@ static void clear_frames_locked(loop_filter *lf)
     lf->last_capture_time = 0;
 }
 
+static size_t estimate_memory_usage(uint32_t width, uint32_t height, size_t frame_count)
+{
+    // Each frame uses approximately width * height * 4 bytes (RGBA)
+    // Plus overhead for texrender structure
+    size_t bytes_per_frame = width * height * 4 + 256; // 256 bytes overhead estimate
+    return (bytes_per_frame * frame_count) / (1024 * 1024); // Return in MB
+}
+
 static void recalc_buffer(loop_filter *lf)
 {
     obs_video_info ovi;
@@ -133,6 +146,19 @@ static void recalc_buffer(loop_filter *lf)
     double effective_fps = lf->fps / lf->capture_skip_frames;
     lf->max_frames = (size_t)std::llround(effective_fps * clampv(lf->buffer_seconds, 10, 60));
     if (lf->max_frames < 2) lf->max_frames = 2;
+    
+    // Check memory limits if we have dimensions
+    if (lf->base_w > 0 && lf->base_h > 0) {
+        size_t estimated_mb = estimate_memory_usage(lf->base_w, lf->base_h, lf->max_frames);
+        if (estimated_mb > lf->max_memory_mb) {
+            // Reduce frame count to fit within memory limit
+            size_t new_max_frames = (lf->max_memory_mb * 1024 * 1024) / (lf->base_w * lf->base_h * 4 + 256);
+            blog(LOG_WARNING, "[" PLUGIN_ID "] Memory limit exceeded! Estimated: %zuMB > Limit: %zuMB. Reducing frames from %zu to %zu",
+                 estimated_mb, lf->max_memory_mb, lf->max_frames, new_max_frames);
+            lf->max_frames = new_max_frames;
+            if (lf->max_frames < 2) lf->max_frames = 2;
+        }
+    }
     
     double base_playback = lf->buffer_seconds * 2.0;  // ping-pong at 1x speed
     blog(LOG_INFO, "[" PLUGIN_ID "] Buffer config: %d seconds content, skip=%d frames, effective fps=%.1f, max_frames=%zu (ping-pong at 1x = %.1f seconds)", 
@@ -324,7 +350,7 @@ static obs_properties_t *loop_filter_properties(void *data)
 
     // A button to toggle loop state from UI
     const char *button_text = lf && lf->loop_enabled ? "Stop Loop ⏹" : "Start Loop ▶";
-    lf->toggle_button = obs_properties_add_button(props, "toggle_loop", button_text,
+    obs_properties_add_button(props, "toggle_loop", button_text,
         [](obs_properties_t *props, obs_property_t *prop, void *data) -> bool {
             auto *lf = reinterpret_cast<loop_filter*>(data);
             if (!lf) return false;
@@ -372,9 +398,8 @@ static obs_properties_t *loop_filter_properties(void *data)
             // Stop looping first if active
             if (lf->loop_enabled) {
                 lf->loop_enabled = false;
-                if (lf->toggle_button) {
-                    obs_property_set_description(lf->toggle_button, "Start Loop ▶");
-                }
+                // Update button through properties refresh
+                obs_source_update_properties(lf->context);
             }
             
             // Clear all frames with extra safety checks
@@ -450,9 +475,39 @@ static void loop_filter_tick(void *data, float seconds)
     if (w != lf->base_w || h != lf->base_h) {
         blog(LOG_INFO, "[" PLUGIN_ID "] Dimensions changed: %ux%u -> %ux%u", 
              lf->base_w, lf->base_h, w, h);
+        
+        // Clear buffer on resolution change to avoid mixing different resolutions
+        if (lf->base_w > 0 && lf->base_h > 0 && (w != lf->base_w || h != lf->base_h)) {
+            obs_enter_graphics();
+            {
+                std::lock_guard<std::mutex> lk(lf->frames_mtx);
+                if (lf->frames.size() > 0) {
+                    blog(LOG_INFO, "[" PLUGIN_ID "] Clearing %zu frames due to resolution change", lf->frames.size());
+                    clear_frames_locked(lf);
+                    lf->capture_start_time = 0;
+                    lf->frames_captured_count = 0;
+                    lf->last_logged_frame_count = 0;
+                }
+            }
+            obs_leave_graphics();
+            
+            // Stop looping if active
+            if (lf->loop_enabled) {
+                lf->loop_enabled = false;
+                obs_source_update_properties(lf->context);
+            }
+        }
+        
         lf->base_w = w;
         lf->base_h = h;
         lf->dimensions_valid = (w > 0 && h > 0);
+        lf->last_width = w;
+        lf->last_height = h;
+        
+        // Recalculate buffer with new dimensions for memory limits
+        if (lf->dimensions_valid) {
+            recalc_buffer(lf);
+        }
     }
 
     if (!lf->loop_enabled || !lf->dimensions_valid) {
@@ -466,6 +521,12 @@ static void loop_filter_tick(void *data, float seconds)
     double frames_per_second = (lf->frames.size() / (double)lf->buffer_seconds) * lf->playback_speed;
     double step = seconds * frames_per_second;
     lf->frame_accum += step;
+    
+    // Prevent overflow - reset accumulator if it gets too large
+    if (lf->frame_accum > 1000000.0) {
+        blog(LOG_WARNING, "[" PLUGIN_ID "] Frame accumulator overflow protection triggered");
+        lf->frame_accum = 0.0;
+    }
 
     size_t frames_to_advance = (size_t)lf->frame_accum;
     lf->frame_accum -= (double)frames_to_advance;
@@ -483,9 +544,17 @@ static void loop_filter_tick(void *data, float seconds)
                     lf->direction = -1;
                     if (lf->play_index > 0) lf->play_index--;
                     lf->total_loops++;
+                    // Prevent overflow of loop counter
+                    if (lf->total_loops > 1000000) {
+                        lf->total_loops = 0;
+                    }
                 } else {
                     lf->play_index = 0;
                     lf->total_loops++;
+                    // Prevent overflow of loop counter
+                    if (lf->total_loops > 1000000) {
+                        lf->total_loops = 0;
+                    }
                 }
             } else {
                 lf->play_index++;
@@ -496,9 +565,17 @@ static void loop_filter_tick(void *data, float seconds)
                     lf->direction = +1;
                     if (lf->frames.size() > 1) lf->play_index++;
                     lf->total_loops++;
+                    // Prevent overflow of loop counter
+                    if (lf->total_loops > 1000000) {
+                        lf->total_loops = 0;
+                    }
                 } else {
                     lf->play_index = lf->frames.size() - 1;
                     lf->total_loops++;
+                    // Prevent overflow of loop counter
+                    if (lf->total_loops > 1000000) {
+                        lf->total_loops = 0;
+                    }
                 }
             } else {
                 lf->play_index--;
@@ -529,26 +606,25 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
 
     // If loop is enabled and we have frames, play from buffer
     if (lf->loop_enabled) {
-        gs_texrender_t *frame_to_draw = nullptr;
-        {
-            std::lock_guard<std::mutex> lk(lf->frames_mtx);
-            if (!lf->frames.empty() && lf->play_index < lf->frames.size()) {
-                frame_to_draw = lf->frames[lf->play_index];
-            }
-        }
+        // Keep mutex locked while accessing frame to prevent race condition
+        std::lock_guard<std::mutex> lk(lf->frames_mtx);
         
-        if (frame_to_draw) {
-            gs_texture_t *tex = gs_texrender_get_texture(frame_to_draw);
-            if (tex) {
-                // Use obs_source_draw to render the buffered frame
-                gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-                gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
-                gs_effect_set_texture(image, tex);
-                
-                while (gs_effect_loop(default_effect, "Draw")) {
-                    gs_draw_sprite(tex, 0, w, h);
+        if (!lf->frames.empty() && lf->play_index < lf->frames.size()) {
+            gs_texrender_t *frame_to_draw = lf->frames[lf->play_index];
+            
+            if (frame_to_draw) {
+                gs_texture_t *tex = gs_texrender_get_texture(frame_to_draw);
+                if (tex) {
+                    // Use obs_source_draw to render the buffered frame
+                    gs_effect_t *default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+                    gs_eparam_t *image = gs_effect_get_param_by_name(default_effect, "image");
+                    gs_effect_set_texture(image, tex);
+                    
+                    while (gs_effect_loop(default_effect, "Draw")) {
+                        gs_draw_sprite(tex, 0, w, h);
+                    }
+                    return;
                 }
-                return;
             }
         }
         // If no valid frame, skip the filter
@@ -560,19 +636,30 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
     // First, we need to capture the current frame
     gs_texrender_t *texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     
-    if (texrender) {
-        // Render source to texrender
-        if (gs_texrender_begin(texrender, w, h)) {
-            vec4 clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
-            gs_clear(GS_CLEAR_COLOR, &clear_color, 1.0f, 0);
-            
-            // Render parent source
-            obs_source_t *parent = obs_filter_get_parent(lf->context);
-            if (parent) {
-                obs_source_video_render(parent);
-            }
-            
-            gs_texrender_end(texrender);
+    if (!texrender) {
+        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create texrender for capture");
+        obs_source_skip_video_filter(lf->context);
+        return;
+    }
+    
+    // Use RAII-style cleanup to ensure texrender is always destroyed
+    bool render_success = false;
+    
+    if (gs_texrender_begin(texrender, w, h)) {
+        vec4 clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+        gs_clear(GS_CLEAR_COLOR, &clear_color, 1.0f, 0);
+        
+        // Render parent source
+        obs_source_t *parent = obs_filter_get_parent(lf->context);
+        if (parent) {
+            obs_source_video_render(parent);
+        }
+        
+        gs_texrender_end(texrender);
+        render_success = true;
+    }
+    
+    if (render_success) {
             
             // Capture frame to buffer based on time intervals to ensure correct timing
             uint64_t current_time = os_gettime_ns();
@@ -599,7 +686,9 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                     
                     // Create new texrender for this frame
                     gs_texrender_t *frame_copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-                    if (frame_copy && gs_texrender_begin(frame_copy, w, h)) {
+                    if (!frame_copy) {
+                        blog(LOG_ERROR, "[" PLUGIN_ID "] Failed to create frame copy texrender");
+                    } else if (gs_texrender_begin(frame_copy, w, h)) {
                         vec4 clear = {0.0f, 0.0f, 0.0f, 0.0f};
                         gs_clear(GS_CLEAR_COLOR, &clear, 1.0f, 0);
                         
@@ -654,9 +743,10 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                 }
             }
         }
-        
-        gs_texrender_destroy(texrender);
     }
+    
+    // Always cleanup texrender
+    gs_texrender_destroy(texrender);
     
     // Pass through the source video
     obs_source_skip_video_filter(lf->context);
@@ -687,9 +777,7 @@ static void loop_filter_show(void *data)
     // Stop looping if it was active
     if (lf->loop_enabled) {
         lf->loop_enabled = false;
-        if (lf->toggle_button) {
-            obs_property_set_description(lf->toggle_button, "Start Loop ▶");
-        }
+        // Properties will update on next refresh
     }
 }
 
@@ -703,9 +791,7 @@ static void loop_filter_hide(void *data)
     // Stop looping when hidden
     if (lf->loop_enabled) {
         lf->loop_enabled = false;
-        if (lf->toggle_button) {
-            obs_property_set_description(lf->toggle_button, "Start Loop ▶");
-        }
+        // Properties will update on next refresh
     }
     
     // Clear buffer when filter is hidden
@@ -750,20 +836,16 @@ static void loop_filter_toggle_cb(void *data, obs_hotkey_id, obs_hotkey_t *, boo
             if (lf->ping_pong) playback_seconds *= 2.0;
             blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey: Loop STARTED - %zu frames = %.1f seconds content, playback at %.1fx = ~%.1f seconds", 
                  frame_count, content_seconds, lf->playback_speed, playback_seconds);
-            // Update button text if possible
-            if (lf->toggle_button) {
-                obs_property_set_description(lf->toggle_button, "Stop Loop ⏹");
-            }
+            // Properties will update on next refresh
+            obs_source_update_properties(lf->context);
         } else {
             blog(LOG_WARNING, "[" PLUGIN_ID "] No frames in buffer!");
             lf->loop_enabled = false;
         }
     } else {
         blog(LOG_INFO, "[" PLUGIN_ID "] Hotkey: Loop STOPPED after %d complete cycles", lf->total_loops / 2);
-        // Update button text if possible
-        if (lf->toggle_button) {
-            obs_property_set_description(lf->toggle_button, "Start Loop ▶");
-        }
+        // Properties will update on next refresh
+        obs_source_update_properties(lf->context);
     }
 }
 
