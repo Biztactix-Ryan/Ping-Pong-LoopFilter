@@ -33,11 +33,11 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.example.obs.pingpong-loop-filter"
+            "bundleId": "com.biztactix.obs.looper"
         }
     },
-    "name": "obs-pingpong-loop-filter",
-    "displayName": "PingPong Loop Filter",
+    "name": "obs-looper",
+    "displayName": "Looper",
     "version": "1.0.0",
     "author": "Biztactix",
     "website": "https://github.com/Biztactix-Ryan/Ping-Pong-LoopFilter",

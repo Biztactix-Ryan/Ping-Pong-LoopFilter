@@ -15,8 +15,8 @@
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-pingpong-loop-filter", "en-US")
 
-#define PLUGIN_NAME        "PingPong Loop Filter"
-#define PLUGIN_ID          "com.example.obs.pingpong_loop_filter"
+#define PLUGIN_NAME        "Looper"
+#define PLUGIN_ID          "com.biztactix.obs.looper"
 
 // ----------------------------- Utilities -----------------------------
 
@@ -199,10 +199,64 @@ static obs_properties_t *loop_filter_properties(void *data)
     auto *lf = reinterpret_cast<loop_filter*>(data);
 
     obs_properties_t *props = obs_properties_create();
+    
+    // Store the filter pointer for callbacks
+    obs_properties_set_param(props, lf, nullptr);
 
-    obs_properties_add_int(props, "buffer_seconds", "Buffer Length (seconds)", 10, 60, 1);
-    obs_properties_add_bool(props, "ping_pong", "Ping-Pong (Forward/Reverse)");
-    obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
+    // Add buffer length with callback to update duration display
+    auto *buffer_prop = obs_properties_add_int(props, "buffer_seconds", "Buffer Length (seconds)", 10, 60, 1);
+    obs_property_set_modified_callback(buffer_prop, [](obs_properties_t *props, obs_property_t*, obs_data_t *settings) {
+        // Update duration text when buffer length changes
+        auto *lf = reinterpret_cast<loop_filter*>(obs_properties_get_param(props));
+        if (lf) {
+            lf->buffer_seconds = (int)obs_data_get_int(settings, "buffer_seconds");
+            // Update duration display
+            double base_duration = lf->ping_pong ? (lf->buffer_seconds * 2.0) : lf->buffer_seconds;
+            double actual_duration = base_duration / lf->playback_speed;
+            char duration_text[256];
+            snprintf(duration_text, sizeof(duration_text), 
+                "⏱️ Playback Duration: %.1f seconds at %.1fx speed", 
+                actual_duration, lf->playback_speed);
+            obs_property_set_description(obs_properties_get(props, "duration_info"), duration_text);
+        }
+        return true;
+    });
+    
+    // Add ping-pong toggle with callback
+    auto *pingpong_prop = obs_properties_add_bool(props, "ping_pong", "Ping-Pong (Forward/Reverse)");
+    obs_property_set_modified_callback(pingpong_prop, [](obs_properties_t *props, obs_property_t*, obs_data_t *settings) {
+        auto *lf = reinterpret_cast<loop_filter*>(obs_properties_get_param(props));
+        if (lf) {
+            lf->ping_pong = obs_data_get_bool(settings, "ping_pong");
+            // Update duration display
+            double base_duration = lf->ping_pong ? (lf->buffer_seconds * 2.0) : lf->buffer_seconds;
+            double actual_duration = base_duration / lf->playback_speed;
+            char duration_text[256];
+            snprintf(duration_text, sizeof(duration_text), 
+                "⏱️ Playback Duration: %.1f seconds at %.1fx speed", 
+                actual_duration, lf->playback_speed);
+            obs_property_set_description(obs_properties_get(props, "duration_info"), duration_text);
+        }
+        return true;
+    });
+    
+    // Add playback speed with callback
+    auto *speed_prop = obs_properties_add_float_slider(props, "playback_speed", "Playback Speed", 0.1, 2.0, 0.1);
+    obs_property_set_modified_callback(speed_prop, [](obs_properties_t *props, obs_property_t*, obs_data_t *settings) {
+        auto *lf = reinterpret_cast<loop_filter*>(obs_properties_get_param(props));
+        if (lf) {
+            lf->playback_speed = obs_data_get_double(settings, "playback_speed");
+            // Update duration display immediately
+            double base_duration = lf->ping_pong ? (lf->buffer_seconds * 2.0) : lf->buffer_seconds;
+            double actual_duration = base_duration / lf->playback_speed;
+            char duration_text[256];
+            snprintf(duration_text, sizeof(duration_text), 
+                "⏱️ Playback Duration: %.1f seconds at %.1fx speed", 
+                actual_duration, lf->playback_speed);
+            obs_property_set_description(obs_properties_get(props, "duration_info"), duration_text);
+        }
+        return true;
+    });
     
     // Add playback duration info as separate text field
     if (lf) {
@@ -215,7 +269,8 @@ static obs_properties_t *loop_filter_properties(void *data)
         obs_properties_add_text(props, "duration_info", duration_text, OBS_TEXT_INFO);
     }
     
-    // Add buffer status info with real-time updates
+    // Add buffer status info - this will show current state but won't auto-update
+    // (auto-updates interfere with slider dragging)
     if (lf) {
         std::lock_guard<std::mutex> lk(lf->frames_mtx);
         size_t frame_count = lf->frames.size();
@@ -225,20 +280,20 @@ static obs_properties_t *loop_filter_properties(void *data)
         if (lf->loop_enabled) {
             int cycles = lf->total_loops / 2;
             snprintf(status_text, sizeof(status_text), 
-                "🔄 LOOPING: %zu frames (%.1f sec content) | Cycle %d | Frame %zu/%zu", 
-                frame_count, content_seconds, cycles + 1, lf->play_index + 1, frame_count);
+                "🔄 LOOPING: %zu frames (%.1f sec content) | Press Stop to update status", 
+                frame_count, content_seconds);
         } else if (frame_count > 0) {
             int percent = (int)((frame_count * 100) / lf->max_frames);
             snprintf(status_text, sizeof(status_text), 
-                "📼 RECORDING: %zu/%zu frames (%d%%) | %.1f/%.1f seconds", 
+                "📼 Buffer: %zu/%zu frames (%d%%) | %.1f/%.1f seconds", 
                 frame_count, lf->max_frames, percent, content_seconds, (double)lf->buffer_seconds);
         } else {
             snprintf(status_text, sizeof(status_text), 
                 "⏸️ READY: Buffer empty - video will be captured when playing");
         }
         
-        obs_properties_add_text(props, "buffer_status", "Buffer Status", OBS_TEXT_INFO);
-        obs_property_set_description(obs_properties_get(props, "buffer_status"), status_text);
+        auto *status_prop = obs_properties_add_text(props, "buffer_status", "Buffer Status", OBS_TEXT_INFO);
+        obs_property_set_description(status_prop, status_text);
     }
 
     // A button to toggle loop state from UI
@@ -322,13 +377,8 @@ static void loop_filter_tick(void *data, float seconds)
     auto *lf = reinterpret_cast<loop_filter*>(data);
     if (!lf || !lf->context) return;
 
-    // Update UI periodically (every 1 second)
+    // Track time for UI updates (but don't force refresh - it interferes with controls)
     lf->last_ui_update += seconds;
-    if (lf->last_ui_update >= 1.0) {
-        lf->last_ui_update = 0.0;
-        // Force properties refresh to update buffer status
-        obs_source_update_properties(lf->context);
-    }
 
     // Update dimensions
     uint32_t w = obs_source_get_base_width(lf->context);
@@ -564,8 +614,8 @@ static void loop_filter_register_hotkeys(loop_filter *lf)
 {
     lf->hotkey_toggle = obs_hotkey_register_source(
         lf->context,
-        "pingpong_toggle",
-        "PingPong Loop: Toggle",
+        "looper_toggle",
+        "Looper: Toggle",
         loop_filter_toggle_cb,
         lf
     );
