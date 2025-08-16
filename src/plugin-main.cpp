@@ -83,6 +83,8 @@ static obs_properties_t *loop_filter_properties(void *data);
 static void loop_filter_get_defaults(obs_data_t *settings);
 static void loop_filter_tick(void *data, float seconds);
 static void loop_filter_render(void *data, gs_effect_t *effect);
+static void loop_filter_show(void *data);
+static void loop_filter_hide(void *data);
 
 // Hotkey
 static void loop_filter_register_hotkeys(loop_filter *lf);
@@ -660,6 +662,70 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
     obs_source_skip_video_filter(lf->context);
 }
 
+static void loop_filter_show(void *data)
+{
+    auto *lf = reinterpret_cast<loop_filter*>(data);
+    if (!lf) return;
+    
+    blog(LOG_INFO, "[" PLUGIN_ID "] Filter shown - clearing buffer to start fresh");
+    
+    // Clear buffer when filter is shown to avoid stale content
+    obs_enter_graphics();
+    {
+        std::lock_guard<std::mutex> lk(lf->frames_mtx);
+        if (lf->frames.size() > 0) {
+            clear_frames_locked(lf);
+            // Reset all capture tracking
+            lf->capture_start_time = 0;
+            lf->frames_captured_count = 0;
+            lf->last_logged_frame_count = 0;
+            lf->last_capture_time = 0;
+        }
+    }
+    obs_leave_graphics();
+    
+    // Stop looping if it was active
+    if (lf->loop_enabled) {
+        lf->loop_enabled = false;
+        if (lf->toggle_button) {
+            obs_property_set_description(lf->toggle_button, "Start Loop ▶");
+        }
+    }
+}
+
+static void loop_filter_hide(void *data)
+{
+    auto *lf = reinterpret_cast<loop_filter*>(data);
+    if (!lf) return;
+    
+    blog(LOG_INFO, "[" PLUGIN_ID "] Filter hidden - stopping loop and clearing buffer");
+    
+    // Stop looping when hidden
+    if (lf->loop_enabled) {
+        lf->loop_enabled = false;
+        if (lf->toggle_button) {
+            obs_property_set_description(lf->toggle_button, "Start Loop ▶");
+        }
+    }
+    
+    // Clear buffer when filter is hidden
+    obs_enter_graphics();
+    {
+        std::lock_guard<std::mutex> lk(lf->frames_mtx);
+        if (lf->frames.size() > 0) {
+            size_t frame_count = lf->frames.size();
+            clear_frames_locked(lf);
+            blog(LOG_INFO, "[" PLUGIN_ID "] Cleared %zu frames on hide", frame_count);
+            // Reset all capture tracking
+            lf->capture_start_time = 0;
+            lf->frames_captured_count = 0;
+            lf->last_logged_frame_count = 0;
+            lf->last_capture_time = 0;
+        }
+    }
+    obs_leave_graphics();
+}
+
 // ----------------------------- Hotkeys -----------------------------
 
 static void loop_filter_toggle_cb(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
@@ -733,6 +799,8 @@ bool obs_module_load(void)
 
     loop_filter_info.video_render = loop_filter_render;
     loop_filter_info.video_tick = loop_filter_tick;
+    loop_filter_info.show = loop_filter_show;
+    loop_filter_info.hide = loop_filter_hide;
 
     obs_register_source(&loop_filter_info);
 
