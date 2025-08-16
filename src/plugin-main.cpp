@@ -63,6 +63,7 @@ struct loop_filter {
     // Frame capture state
     bool dimensions_valid = false;
     int frame_skip_counter = 0;  // To reduce capture rate
+    uint64_t last_capture_time = 0;  // Track last capture time in nanoseconds
     
     // UI state
     obs_property_t *toggle_button = nullptr;
@@ -108,6 +109,7 @@ static void clear_frames_locked(loop_filter *lf)
     lf->direction = +1;
     lf->frame_accum = 0.0;
     lf->frame_skip_counter = 0;
+    lf->last_capture_time = 0;
 }
 
 static void recalc_buffer(loop_filter *lf)
@@ -123,7 +125,9 @@ static void recalc_buffer(loop_filter *lf)
     }
 
     // Calculate frames based on actual capture rate (every Nth frame)
-    // This maintains a circular buffer that captures 'buffer_seconds' worth of content
+    // We want to capture 'buffer_seconds' worth of real-time content
+    // If OBS is 60fps and we skip every 2 frames, we capture at 30fps
+    // But we need to account for the actual render callback rate
     double effective_fps = lf->fps / lf->capture_skip_frames;
     lf->max_frames = (size_t)std::llround(effective_fps * clampv(lf->buffer_seconds, 10, 60));
     if (lf->max_frames < 2) lf->max_frames = 2;
@@ -383,6 +387,7 @@ static obs_properties_t *loop_filter_properties(void *data)
                     lf->capture_start_time = 0;
                     lf->frames_captured_count = 0;
                     lf->last_logged_frame_count = 0;
+                    lf->last_capture_time = 0;
                 }
             }
             obs_leave_graphics();
@@ -567,10 +572,16 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
             
             gs_texrender_end(texrender);
             
-            // Capture frame to buffer (only every few frames to save memory)
-            lf->frame_skip_counter++;
-            if (lf->frame_skip_counter >= lf->capture_skip_frames) {
-                lf->frame_skip_counter = 0;
+            // Capture frame to buffer based on time intervals to ensure correct timing
+            uint64_t current_time = os_gettime_ns();
+            
+            // Calculate minimum time between captures based on desired frame rate
+            // We want to capture at effective_fps = fps / capture_skip_frames
+            uint64_t min_capture_interval = (uint64_t)(1000000000.0 * lf->capture_skip_frames / lf->fps);
+            
+            // Check if enough time has passed since last capture
+            if (current_time - lf->last_capture_time >= min_capture_interval) {
+                lf->last_capture_time = current_time;
                 
                 // Only capture if not looping
                 std::lock_guard<std::mutex> lk(lf->frames_mtx);
@@ -578,10 +589,10 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                     
                     // Track capture start
                     if (lf->frames.empty() && lf->capture_start_time == 0) {
-                        lf->capture_start_time = os_gettime_ns();
+                        lf->capture_start_time = current_time;
                         lf->frames_captured_count = 0;
-                        blog(LOG_INFO, "[" PLUGIN_ID "] Starting buffer capture at fps=%.2f, skip=%d", 
-                             lf->fps, lf->capture_skip_frames);
+                        blog(LOG_INFO, "[" PLUGIN_ID "] Starting buffer capture at fps=%.2f, target capture rate=%.2f fps", 
+                             lf->fps, lf->fps / lf->capture_skip_frames);
                     }
                     
                     // Create new texrender for this frame
@@ -620,7 +631,7 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                             bool should_log = (++log_counter % 30 == 0) || (lf->frames.size() == lf->max_frames);
                             
                             if (should_log && lf->capture_start_time > 0) {
-                                double elapsed = (os_gettime_ns() - lf->capture_start_time) / 1000000000.0;
+                                double elapsed = (current_time - lf->capture_start_time) / 1000000000.0;
                                 double buffer_seconds = lf->frames.size() * lf->capture_skip_frames / lf->fps;
                                 double capture_rate = lf->frames_captured_count / elapsed;
                                 blog(LOG_INFO, "[" PLUGIN_ID "] Buffer: %zu/%zu frames (%.1f/%.1f sec content) | Elapsed: %.1fs | Capture rate: %.1f fps", 
@@ -628,11 +639,10 @@ static void loop_filter_render(void *data, gs_effect_t *effect)
                                      elapsed, capture_rate);
                                 
                                 if (lf->frames.size() == lf->max_frames) {
-                                    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer FILLED in %.1f seconds (expected ~%d seconds)", 
-                                         elapsed, lf->buffer_seconds);
-                                    // Reset for next capture
-                                    lf->capture_start_time = 0;
-                                    lf->frames_captured_count = 0;
+                                    blog(LOG_INFO, "[" PLUGIN_ID "] Buffer FILLED in %.1f seconds (expected ~%d seconds) - Timing %s", 
+                                         elapsed, lf->buffer_seconds, 
+                                         (elapsed < lf->buffer_seconds * 0.9) ? "TOO FAST!" : "OK");
+                                    // Reset for next capture but don't clear start time for continued logging
                                 }
                             }
                         }
